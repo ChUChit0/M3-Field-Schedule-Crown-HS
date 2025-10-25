@@ -1,0 +1,4176 @@
+/**
+ * Crown HS Schedule Calendar - Complete Bundle
+ * Auto-generated from modular source files
+ */
+const { useState, useEffect, useMemo, useRef } = React;
+
+
+
+// ========== CONFIG ==========
+// Area Configuration
+window.areaConfig = {
+    "E": { name: "Area E", color: "#475569" },
+    "D": { name: "Area D", color: "#64748b" },
+    "C": { name: "Area C", color: "#94a3b8" },
+    "B": { name: "Area B", color: "#64748b" },
+    "A": { name: "Area A", color: "#475569" },
+    "F": { name: "Area F", color: "#94a3b8" }
+};
+
+// Field definitions for Excel mapping
+window.FIELD_DEFINITIONS = [
+    { key: 'id', label: 'Activity ID', required: true },
+    { key: 'name', label: 'Activity Name', required: true },
+    { key: 'original_duration', label: 'Original Duration', required: false },
+    { key: 'start', label: 'Start Date', required: true },
+    { key: 'finish', label: 'Finish Date', required: true },
+    { key: 'actual_start', label: 'Actual Start', required: false },
+    { key: 'actual_finish', label: 'Actual Finish', required: false },
+    { key: 'rem_duration', label: 'New Rem Duration', required: false },
+    { key: 'comments', label: 'Comments', required: false },
+    { key: 'area', label: 'Area', required: false }
+];
+
+// ID Pattern Configuration for parsing activity IDs
+const ID_PATTERN_CONFIG = {
+    floors: {
+        'LL': 'Lower Level',
+        'ML': 'Mezzanine Level',
+        '01': '1st Floor',
+        '02': '2nd Floor',
+        '03': '3rd Floor',
+        '04': '4th Floor',
+        '05': '5th Floor',
+        'RF': 'Roof'
+    },
+    zones: {
+        'INT': 'Interior',
+        'K': 'Kitchen',
+        'BAT': 'Bathroom',
+        'COR': 'Corridor',
+        'LBY': 'Lobby',
+        'OFF': 'Office',
+        'MEC': 'Mechanical',
+        'ELE': 'Electrical',
+        'EXT': 'Exterior'
+    }
+};
+
+// ========== UTILITIES ==========
+// Date Utility Functions
+
+/**
+ * Parse date string in MM/DD/YY format to Date object
+ * @param {string} dateStr - Date string in MM/DD/YY format
+ * @returns {Date|null} - Date object or null if invalid
+ */
+window.formatDate = (dateStr) => {
+    if (!dateStr) return null;
+    const [month, day, year] = dateStr.split('/');
+    const fullYear = year.length === 2 ? '20' + year : year;
+    return new Date(fullYear, parseInt(month) - 1, parseInt(day));
+};
+
+/**
+ * Convert Date object to MM/DD/YY string
+ * @param {Date} date - Date object
+ * @returns {string} - Date string in MM/DD/YY format
+ */
+window.dateToString = (date) => {
+    if (!date) return '';
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const year = String(date.getFullYear()).slice(-2);
+    return `${month}/${day}/${year}`;
+};
+
+/**
+ * Convert Excel serial date number to MM/DD/YY string
+ * Excel stores dates as days since 1900-01-01
+ * @param {number|string} serial - Excel serial date number
+ * @returns {string} - Date string in MM/DD/YY format
+ */
+const excelDateToString = (serial) => {
+    if (!serial || serial === '') return '';
+
+    // If it's already a string date, return it
+    if (typeof serial === 'string' && serial.includes('/')) return serial;
+
+    // Convert Excel serial number to date
+    if (typeof serial === 'number') {
+        const utc_days = Math.floor(serial - 25569);
+        const utc_value = utc_days * 86400;
+        const date_info = new Date(utc_value * 1000);
+
+        const month = String(date_info.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(date_info.getUTCDate()).padStart(2, '0');
+        const year = String(date_info.getUTCFullYear()).slice(-2);
+
+        return `${month}/${day}/${year}`;
+    }
+
+    return '';
+};
+
+/**
+ * Get today's date with time set to midnight
+ * @returns {Date} - Today's date at 00:00:00
+ */
+const getToday = () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today;
+};
+
+// Excel Import and Processing Utilities
+
+/**
+ * Process Excel file and extract data
+ * @param {File} file - Excel file
+ * @returns {Promise<{data: Array, headers: Array}>} - Parsed Excel data and headers
+ */
+const processExcelFile = (file) => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+
+        reader.onload = (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+
+                if (jsonData.length === 0) {
+                    reject(new Error('Excel file is empty'));
+                    return;
+                }
+
+                const headers = jsonData[0];
+                const rows = jsonData.slice(1).filter(row => row.some(cell => cell !== ''));
+
+                resolve({ data: rows, headers });
+            } catch (error) {
+                reject(error);
+            }
+        };
+
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.readAsArrayBuffer(file);
+    });
+};
+
+/**
+ * Map Excel row to activity object using column mapping
+ * @param {Array} row - Excel row data
+ * @param {Object} columnMapping - Mapping of field keys to column indices
+ * @returns {Object} - Activity object
+ */
+const mapRowToActivity = (row, columnMapping) => {
+    const activity = {
+        area: 'A' // Default area
+    };
+
+    Object.keys(columnMapping).forEach(fieldKey => {
+        const colIndex = columnMapping[fieldKey];
+        let value = row[colIndex];
+
+        // Skip empty/undefined values
+        if (value === '' || value === null || value === undefined) {
+            return;
+        }
+
+        // Convert dates (start, finish, actual_start, actual_finish)
+        if (['start', 'finish', 'actual_start', 'actual_finish'].includes(fieldKey)) {
+            value = excelDateToString(value);
+            // If conversion failed, skip this field
+            if (!value) return;
+        }
+
+        activity[fieldKey] = value;
+    });
+
+    return activity;
+};
+
+/**
+ * Apply keyword filters to activities
+ * @param {Array} activities - Array of activities
+ * @param {Object} filterConfig - Filter configuration {field: string, keywords: Array}
+ * @returns {Array} - Filtered activities
+ */
+const applyKeywordFilters = (activities, filterConfig) => {
+    if (!filterConfig.keywords || filterConfig.keywords.length === 0) {
+        return activities;
+    }
+
+    return activities.filter(activity => {
+        const fieldValue = String(activity[filterConfig.field] || '').toLowerCase();
+        return filterConfig.keywords.some(keyword =>
+            fieldValue.includes(keyword.toLowerCase())
+        );
+    });
+};
+
+/**
+ * Validate activity has required fields
+ * @param {Object} activity - Activity object
+ * @returns {boolean} - True if valid
+ */
+const isValidActivity = (activity) => {
+    // Only require ID and Name - dates are optional
+    return activity.id && activity.name;
+};
+
+// Intelligent Duplicate Detection System
+// For Construction Project Management
+
+/**
+ * Compare two activities to determine if they're duplicates
+ * Uses fuzzy matching on 4 critical fields: id, name, start, finish
+ *
+ * @param {Object} activity1 - First activity
+ * @param {Object} activity2 - Second activity
+ * @returns {Object} - {isDuplicate: boolean, matchScore: number, differences: Array}
+ */
+const compareActivities = (activity1, activity2) => {
+    const fields = ['id', 'name', 'start', 'finish'];
+    let matches = 0;
+    const differences = [];
+
+    fields.forEach(field => {
+        const val1 = String(activity1[field] || '').trim().toLowerCase();
+        const val2 = String(activity2[field] || '').trim().toLowerCase();
+
+        if (val1 === val2) {
+            matches++;
+        } else {
+            differences.push({
+                field,
+                oldValue: activity1[field],
+                newValue: activity2[field]
+            });
+        }
+    });
+
+    const matchScore = matches / fields.length; // 0.0 to 1.0
+
+    // If 3 or 4 out of 4 critical fields match, it's likely a duplicate/update
+    const isDuplicate = matches >= 3;
+
+    return {
+        isDuplicate,
+        matchScore,
+        matches,
+        differences
+    };
+};
+
+/**
+ * Analyze import data for duplicates against existing activities
+ *
+ * @param {Array} importActivities - Activities to be imported
+ * @param {Array} existingActivities - Activities already in the update
+ * @returns {Object} - Analysis results with statistics and recommendations
+ */
+const analyzeImport = (importActivities, existingActivities) => {
+    const duplicates = [];
+    const newActivities = [];
+    const updates = [];
+
+    importActivities.forEach(importAct => {
+        let bestMatch = null;
+        let bestScore = 0;
+
+        // Find best matching existing activity
+        existingActivities.forEach(existingAct => {
+            const comparison = compareActivities(importAct, existingAct);
+            if (comparison.isDuplicate && comparison.matchScore > bestScore) {
+                bestScore = comparison.matchScore;
+                bestMatch = {
+                    existing: existingAct,
+                    comparison
+                };
+            }
+        });
+
+        if (bestMatch) {
+            // Check if there are actual differences (potential update)
+            if (bestMatch.comparison.differences.length > 0) {
+                updates.push({
+                    activity: importAct,
+                    existing: bestMatch.existing,
+                    differences: bestMatch.comparison.differences,
+                    matchScore: bestMatch.comparison.matchScore
+                });
+            } else {
+                // Exact duplicate
+                duplicates.push({
+                    activity: importAct,
+                    existing: bestMatch.existing,
+                    matchScore: bestMatch.comparison.matchScore
+                });
+            }
+        } else {
+            // No match found - it's a new activity
+            newActivities.push(importAct);
+        }
+    });
+
+    // Calculate statistics
+    const total = importActivities.length;
+    const duplicateCount = duplicates.length;
+    const updateCount = updates.length;
+    const newCount = newActivities.length;
+    const duplicatePercentage = (duplicateCount / total) * 100;
+    const updatePercentage = (updateCount / total) * 100;
+
+    // Generate intelligent recommendation
+    const recommendation = generateRecommendation({
+        total,
+        duplicateCount,
+        updateCount,
+        newCount,
+        duplicatePercentage,
+        updatePercentage
+    });
+
+    return {
+        duplicates,
+        updates,
+        newActivities,
+        statistics: {
+            total,
+            duplicateCount,
+            updateCount,
+            newCount,
+            duplicatePercentage: Math.round(duplicatePercentage),
+            updatePercentage: Math.round(updatePercentage)
+        },
+        recommendation
+    };
+};
+
+/**
+ * Generate intelligent recommendation based on import analysis
+ *
+ * @param {Object} stats - Import statistics
+ * @returns {Object} - Recommendation with type and message
+ */
+const generateRecommendation = (stats) => {
+    const { duplicateCount, updateCount, newCount, duplicatePercentage, updatePercentage } = stats;
+
+    // High percentage of duplicates/updates (>50%) suggests this is a project update
+    if ((duplicatePercentage + updatePercentage) > 50) {
+        return {
+            type: 'CREATE_NEW_UPDATE',
+            icon: 'fa-plus-square',
+            color: 'blue',
+            title: 'Create New Update Version',
+            message: `Detected ${duplicateCount + updateCount} activities that already exist (${duplicatePercentage + updatePercentage}% of import). This looks like a project update.`,
+            suggestion: 'Recommended: Create a new Update version (e.g., Update 14) to preserve historical data and track changes over time.',
+            priority: 'high'
+        };
+    }
+
+    // Medium updates (20-50%) - give user options
+    if (updateCount > 0 && updatePercentage >= 20) {
+        return {
+            type: 'REPLACE_AND_ADD',
+            icon: 'fa-sync-alt',
+            color: 'yellow',
+            title: 'Updates Detected',
+            message: `Found ${updateCount} activities with changes and ${newCount} new activities.`,
+            suggestion: 'Consider: Replace existing activities with updated data and add new ones, or create a new Update version.',
+            priority: 'medium'
+        };
+    }
+
+    // Mostly new activities (<20% duplicates)
+    if (newCount > duplicateCount + updateCount) {
+        return {
+            type: 'ADD_NEW_ONLY',
+            icon: 'fa-plus-circle',
+            color: 'green',
+            title: 'Mostly New Activities',
+            message: `Found ${newCount} new activities and only ${duplicateCount} duplicates.`,
+            suggestion: 'Recommended: Import only new activities and skip duplicates.',
+            priority: 'low'
+        };
+    }
+
+    // Few or no duplicates
+    if (duplicateCount === 0) {
+        return {
+            type: 'IMPORT_ALL',
+            icon: 'fa-check-circle',
+            color: 'green',
+            title: 'No Duplicates Detected',
+            message: 'All activities appear to be new.',
+            suggestion: 'Safe to import all activities.',
+            priority: 'low'
+        };
+    }
+
+    // Default recommendation
+    return {
+        type: 'REVIEW_MANUALLY',
+        icon: 'fa-eye',
+        color: 'gray',
+        title: 'Manual Review Recommended',
+        message: `Mixed import: ${duplicateCount} duplicates, ${updateCount} updates, ${newCount} new.`,
+        suggestion: 'Review the details below and choose the best option for your workflow.',
+        priority: 'medium'
+    };
+};
+
+/**
+ * Get next update number
+ * @param {Array} updates - Array of existing updates
+ * @returns {number} - Next update number
+ */
+const getNextUpdateNumber = (updates) => {
+    const numbers = updates
+        .map(u => {
+            const match = u.name.match(/\d+/);
+            return match ? parseInt(match[0]) : 0;
+        })
+        .filter(n => n > 0);
+
+    return numbers.length > 0 ? Math.max(...numbers) + 1 : updates.length + 1;
+};
+
+/**
+ * LocalStorage Utilities
+ *
+ * Functions for saving and loading data from browser's LocalStorage.
+ * All project data is stored locally per user/browser.
+ *
+ * Schema:
+ * - 'crownScheduleData': { updates, currentUpdateId, lastSaved }
+ * - 'projectName': Custom project name
+ * - 'customAreaConfig': User-customized area codes
+ * - 'customIdPatternConfig': User-customized floor/zone codes
+ */
+
+/**
+ * Save main schedule data to LocalStorage
+ */
+function saveToLocalStorage(updates, currentUpdateId) {
+    try {
+        const dataToSave = {
+            updates,
+            currentUpdateId,
+            lastSaved: new Date().toISOString()
+        };
+        localStorage.setItem('crownScheduleData', JSON.stringify(dataToSave));
+        console.log('💾 Data saved to LocalStorage');
+        return true;
+    } catch (error) {
+        console.error('Error saving to LocalStorage:', error);
+        return false;
+    }
+}
+
+/**
+ * Load main schedule data from LocalStorage
+ */
+function loadFromLocalStorage() {
+    try {
+        const saved = localStorage.getItem('crownScheduleData');
+        if (saved) {
+            const data = JSON.parse(saved);
+            console.log('📂 Data loaded from LocalStorage');
+            return data;
+        }
+        return null;
+    } catch (error) {
+        console.error('Error loading from LocalStorage:', error);
+        return null;
+    }
+}
+
+/**
+ * Export data as JSON file for backup
+ */
+function exportBackup(updates, currentUpdateId) {
+    try {
+        const dataToExport = {
+            updates,
+            currentUpdateId,
+            exportDate: new Date().toISOString(),
+            version: '1.0'
+        };
+
+        const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `crown-schedule-backup-${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        return true;
+    } catch (error) {
+        console.error('Error exporting backup:', error);
+        return false;
+    }
+}
+
+/**
+ * Import data from JSON backup file
+ */
+function importBackup(file, onSuccess, onError) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const imported = JSON.parse(e.target.result);
+
+            if (!imported.updates || !Array.isArray(imported.updates)) {
+                throw new Error('Invalid backup file format');
+            }
+
+            if (onSuccess) {
+                onSuccess(imported);
+            }
+        } catch (error) {
+            console.error('Error importing backup:', error);
+            if (onError) {
+                onError(error);
+            }
+        }
+    };
+    reader.readAsText(file);
+}
+
+/**
+ * Clear all schedule data from LocalStorage
+ */
+function clearLocalStorage() {
+    try {
+        localStorage.removeItem('crownScheduleData');
+        console.log('🗑️ LocalStorage cleared');
+        return true;
+    } catch (error) {
+        console.error('Error clearing LocalStorage:', error);
+        return false;
+    }
+}
+
+// ========== COMPONENTS ==========
+/**
+ * Toast Notification Component
+ *
+ * Auto-dismissing notification that appears for 3 seconds.
+ *
+ * @param {Object} props
+ * @param {string} props.message - Message to display
+ * @param {string} props.type - Type of toast ('success' or 'error')
+ * @param {Function} props.onClose - Callback when toast closes
+ */
+
+
+function Toast({ message, type, onClose }) {
+    useEffect(() => {
+        const timer = setTimeout(onClose, 3000);
+        return () => clearTimeout(timer);
+    }, [onClose]);
+
+    return (
+        <div className={`toast ${type}`}>
+            <i className={`fas ${type === 'success' ? 'fa-check-circle text-green-600' : 'fa-exclamation-circle text-red-600'} text-xl`}></i>
+            <span className="font-medium">{message}</span>
+        </div>
+    );
+}
+
+/**
+ * Delete Confirmation Modal Component
+ *
+ * Confirmation dialog before deleting an update.
+ * Shows warning about permanent deletion and activity count.
+ *
+ * @param {Object} props
+ * @param {Object} props.update - Update to delete
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {Function} props.onConfirm - Callback to confirm deletion
+ */
+
+function DeleteConfirmModal({ update, onClose, onConfirm }) {
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="glass rounded-2xl p-8 max-w-md w-full">
+                <h2 className="text-2xl font-bold mb-4 text-red-600">
+                    <i className="fas fa-exclamation-triangle mr-3"></i>
+                    Delete Update?
+                </h2>
+                <p className="text-gray-700 mb-2">
+                    Are you sure you want to delete <strong>{update.name}</strong>?
+                </p>
+                <p className="text-gray-600 text-sm mb-6">
+                    This will permanently delete {update.activities.length} activities. This action cannot be undone.
+                </p>
+                <div className="flex justify-end gap-3">
+                    <button onClick={onClose} className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition">
+                        Cancel
+                    </button>
+                    <button onClick={onConfirm} className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition">
+                        <i className="fas fa-trash mr-2"></i>
+                        Delete
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Rename Update Modal Component
+ *
+ * Simple modal for renaming an update (e.g., "Update 12" → "Week 3 Update").
+ *
+ * @param {Object} props
+ * @param {Object} props.update - Update to rename
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {Function} props.onRename - Callback to rename update (updateId, newName)
+ */
+
+
+function RenameUpdateModal({ update, onClose, onRename }) {
+    const [newName, setNewName] = useState(update.name);
+
+    const handleSubmit = () => {
+        if (newName.trim()) {
+            onRename(update.id, newName.trim());
+            onClose();
+        }
+    };
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="glass rounded-2xl p-8 max-w-md w-full">
+                <h2 className="text-2xl font-bold mb-6">
+                    <i className="fas fa-edit mr-3 text-slate-600"></i>
+                    Rename Update
+                </h2>
+                <input
+                    type="text"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
+                    className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none mb-6"
+                    placeholder="Update name..."
+                    autoFocus
+                />
+                <div className="flex justify-end gap-3">
+                    <button onClick={onClose} className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition">
+                        Cancel
+                    </button>
+                    <button onClick={handleSubmit} className="px-6 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition">
+                        <i className="fas fa-save mr-2"></i>
+                        Save
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Settings Modal Component
+ *
+ * Allows users to configure project settings including:
+ * - Project name customization
+ * - Future expandable settings sections
+ *
+ * @param {Object} props
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {string} props.projectName - Current project name
+ * @param {Function} props.onSaveProjectName - Callback to save new project name
+ */
+
+
+function SettingsModal({ onClose, projectName, onSaveProjectName }) {
+    const [name, setName] = useState(projectName);
+
+    const handleSave = () => {
+        if (name.trim()) {
+            onSaveProjectName(name.trim());
+            onClose();
+        } else {
+            alert('Project name cannot be empty');
+        }
+    };
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="glass rounded-2xl p-8 max-w-2xl w-full">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-3xl font-bold text-gray-800">
+                        <i className="fas fa-cog mr-3 text-gray-600"></i>
+                        Settings
+                    </h2>
+                    <button
+                        onClick={onClose}
+                        className="text-gray-400 hover:text-gray-600 text-2xl transition"
+                    >
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
+
+                {/* Project Name Section */}
+                <div className="mb-6">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">
+                        <i className="fas fa-project-diagram mr-2 text-blue-600"></i>
+                        Project Name
+                    </h3>
+                    <div className="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4 mb-4">
+                        <p className="text-sm text-blue-800">
+                            <i className="fas fa-info-circle mr-2"></i>
+                            This name will appear in the header and will help you identify your project.
+                        </p>
+                    </div>
+                    <input
+                        type="text"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-lg"
+                        placeholder="e.g., Crown HS Schedule, Building A Construction, etc."
+                    />
+                </div>
+
+                {/* Future sections placeholder */}
+                <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg p-6 text-center text-gray-500 mb-6">
+                    <i className="fas fa-plus-circle text-3xl mb-2"></i>
+                    <p className="text-sm">More settings will be added here in the future</p>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-3 pt-6 border-t-2 border-gray-200">
+                    <button
+                        onClick={onClose}
+                        className="px-6 py-3 bg-gray-300 hover:bg-gray-400 rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-times mr-2"></i>
+                        Cancel
+                    </button>
+                    <button
+                        onClick={handleSave}
+                        className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-save mr-2"></i>
+                        Save Settings
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Edit Activity Modal Component
+ *
+ * Allows editing all fields of an existing activity.
+ * Shows warning when activity lacks start/finish dates (Activities Without Dates).
+ * Highlights missing required fields.
+ *
+ * @param {Object} props
+ * @param {Object} props.activity - Activity to edit
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {Function} props.onSave - Callback to save edited activity
+ * @param {Object} props.customAreaConfig - Custom area configuration
+ * @param {Object} props.customIdPatternConfig - Custom ID pattern config
+ */
+
+
+function EditActivityModal({ activity, onClose, onSave, customAreaConfig, customIdPatternConfig }) {
+    const [editedActivity, setEditedActivity] = useState({
+        ...activity
+    });
+
+    const handleSave = () => {
+        if (!editedActivity.id || !editedActivity.name) {
+            alert('Activity ID and Name are required');
+            return;
+        }
+
+        if (!editedActivity.start || !editedActivity.finish) {
+            alert('Please provide both Start and Finish dates to move this activity to the calendar');
+            return;
+        }
+
+        onSave(editedActivity);
+        onClose();
+    };
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="glass rounded-2xl p-8 max-w-2xl w-full">
+                <h2 className="text-2xl font-bold mb-4">
+                    <i className="fas fa-edit mr-3 text-blue-600"></i>
+                    Edit Activity
+                </h2>
+
+                {(!editedActivity.start || !editedActivity.finish) && (
+                    <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+                        <div className="flex items-start">
+                            <i className="fas fa-info-circle text-yellow-600 mt-1 mr-3"></i>
+                            <div className="text-sm text-gray-700">
+                                <strong>Note:</strong> Once you add both Start and Finish dates, this activity will automatically move from "Activities Without Dates" to the calendar.
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Activity ID *</label>
+                        <input
+                            type="text"
+                            value={editedActivity.id}
+                            onChange={(e) => setEditedActivity({...editedActivity, id: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Area</label>
+                        <select
+                            value={editedActivity.area}
+                            onChange={(e) => setEditedActivity({...editedActivity, area: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        >
+                            {Object.keys(customAreaConfig).map(area => (
+                                <option key={area} value={area}>{customAreaConfig[area].name}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="col-span-2">
+                        <label className="block text-sm font-semibold mb-1">Contractor</label>
+                        <input
+                            type="text"
+                            value={editedActivity.contractor || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, contractor: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            placeholder="e.g., M3, ACME, XYZ Corp..."
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Floor</label>
+                        <input
+                            type="text"
+                            value={editedActivity.floor || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, floor: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            placeholder="e.g., Lower Level, 1st Floor..."
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Zone</label>
+                        <input
+                            type="text"
+                            value={editedActivity.zone || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, zone: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            placeholder="e.g., Interior, Kitchen..."
+                        />
+                    </div>
+
+                    <div className="col-span-2">
+                        <label className="block text-sm font-semibold mb-1">Activity Name *</label>
+                        <input
+                            type="text"
+                            value={editedActivity.name}
+                            onChange={(e) => setEditedActivity({...editedActivity, name: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                        />
+                    </div>
+
+                    <div className="relative">
+                        <label className="block text-sm font-semibold mb-1">
+                            Start Date *
+                            {!editedActivity.start && (
+                                <span className="ml-2 text-red-600 text-xs">
+                                    <i className="fas fa-exclamation-circle"></i> Missing
+                                </span>
+                            )}
+                        </label>
+                        <input
+                            type="text"
+                            value={editedActivity.start || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, start: e.target.value})}
+                            className={`w-full px-3 py-2 border-2 rounded-lg focus:outline-none ${
+                                !editedActivity.start ? 'border-red-300 focus:border-red-500' : 'border-gray-300 focus:border-blue-500'
+                            }`}
+                            placeholder="MM/DD/YY"
+                        />
+                    </div>
+
+                    <div className="relative">
+                        <label className="block text-sm font-semibold mb-1">
+                            Finish Date *
+                            {!editedActivity.finish && (
+                                <span className="ml-2 text-red-600 text-xs">
+                                    <i className="fas fa-exclamation-circle"></i> Missing
+                                </span>
+                            )}
+                        </label>
+                        <input
+                            type="text"
+                            value={editedActivity.finish || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, finish: e.target.value})}
+                            className={`w-full px-3 py-2 border-2 rounded-lg focus:outline-none ${
+                                !editedActivity.finish ? 'border-red-300 focus:border-red-500' : 'border-gray-300 focus:border-blue-500'
+                            }`}
+                            placeholder="MM/DD/YY"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Original Duration</label>
+                        <input
+                            type="text"
+                            value={editedActivity.original_duration || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, original_duration: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            placeholder="Days"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">New Rem Duration</label>
+                        <input
+                            type="text"
+                            value={editedActivity.rem_duration || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, rem_duration: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            placeholder="Days"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Actual Start</label>
+                        <input
+                            type="text"
+                            value={editedActivity.actual_start || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, actual_start: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            placeholder="MM/DD/YY"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Actual Finish</label>
+                        <input
+                            type="text"
+                            value={editedActivity.actual_finish || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, actual_finish: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            placeholder="MM/DD/YY"
+                        />
+                    </div>
+
+                    <div className="col-span-2">
+                        <label className="block text-sm font-semibold mb-1">Comments</label>
+                        <textarea
+                            value={editedActivity.comments || ''}
+                            onChange={(e) => setEditedActivity({...editedActivity, comments: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            rows="3"
+                            placeholder="Additional notes..."
+                        />
+                    </div>
+                </div>
+
+                <div className="flex justify-end gap-3 mt-6">
+                    <button
+                        onClick={onClose}
+                        className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        onClick={handleSave}
+                        className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-save mr-2"></i>
+                        Save Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Manual Entry Modal Component
+ *
+ * Form for manually adding a new activity with all fields.
+ * Features auto-parsing of Activity ID to extract Area/Floor/Zone.
+ * Supports pre-filling date when clicking on a calendar day.
+ *
+ * @param {Object} props
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {Function} props.onAdd - Callback to add activity (activities, update)
+ * @param {Object} props.currentUpdate - Current update object
+ * @param {Date} props.prefilledDate - Optional prefilled date from calendar
+ */
+
+
+function ManualEntryModal({ onClose, onAdd, currentUpdate, prefilledDate = null }) {
+    const [activity, setActivity] = useState({
+        id: '',
+        name: '',
+        area: 'A',
+        floor: '',
+        zone: '',
+        contractor: '',
+        original_duration: '',
+        start: prefilledDate ? dateToString(prefilledDate) : '',
+        finish: prefilledDate ? dateToString(prefilledDate) : '',
+        actual_start: '',
+        actual_finish: '',
+        rem_duration: '',
+        comments: ''
+    });
+
+    // 🆕 Auto-parse Activity ID when user types it
+    const handleIdChange = (newId) => {
+        const parsed = parseActivityID(newId);
+
+        setActivity({
+            ...activity,
+            id: newId,
+            // Auto-fill from parsed ID (parsed values override defaults)
+            area: parsed.area || activity.area,
+            floor: parsed.floor || activity.floor,
+            zone: parsed.zone || activity.zone
+        });
+    };
+
+    const handleSubmit = () => {
+        if (!activity.id || !activity.name || !activity.start || !activity.finish) {
+            alert('Please complete required fields: ID, Name, Start, Finish');
+            return;
+        }
+        onAdd([activity], currentUpdate);
+        onClose();
+    };
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="glass rounded-2xl p-8 max-w-2xl w-full">
+                <h2 className="text-2xl font-bold mb-6">
+                    <i className="fas fa-plus-circle mr-3 text-slate-600"></i>
+                    Add Activity Manually
+                </h2>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Activity ID *</label>
+                        <input
+                            type="text"
+                            value={activity.id}
+                            onChange={(e) => handleIdChange(e.target.value)}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="e.g., D-LL-INT-1230"
+                        />
+                        {activity.id && (activity.floor || activity.zone) && (
+                            <div className="text-xs text-green-600 mt-1">
+                                <i className="fas fa-check-circle mr-1"></i>
+                                Auto-detected: {activity.floor && `Floor: ${activity.floor}`}{activity.floor && activity.zone && ', '}{activity.zone && `Zone: ${activity.zone}`}
+                            </div>
+                        )}
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Area</label>
+                        <select
+                            value={activity.area}
+                            onChange={(e) => setActivity({...activity, area: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                        >
+                            {Object.keys(areaConfig).map(area => (
+                                <option key={area} value={area}>{areaConfig[area].name}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Floor</label>
+                        <input
+                            type="text"
+                            value={activity.floor}
+                            onChange={(e) => setActivity({...activity, floor: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="e.g., Lower Level, 1st Floor..."
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Zone</label>
+                        <input
+                            type="text"
+                            value={activity.zone}
+                            onChange={(e) => setActivity({...activity, zone: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="e.g., Interior, Kitchen..."
+                        />
+                    </div>
+
+                    <div className="col-span-2">
+                        <label className="block text-sm font-semibold mb-1">Contractor</label>
+                        <input
+                            type="text"
+                            value={activity.contractor}
+                            onChange={(e) => setActivity({...activity, contractor: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="e.g., M3, ACME, XYZ Corp..."
+                        />
+                    </div>
+
+                    <div className="col-span-2">
+                        <label className="block text-sm font-semibold mb-1">Activity Name *</label>
+                        <input
+                            type="text"
+                            value={activity.name}
+                            onChange={(e) => setActivity({...activity, name: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="Install Structural Steel"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Start Date *</label>
+                        <input
+                            type="text"
+                            value={activity.start}
+                            onChange={(e) => setActivity({...activity, start: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="01/15/25"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Finish Date *</label>
+                        <input
+                            type="text"
+                            value={activity.finish}
+                            onChange={(e) => setActivity({...activity, finish: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="01/20/25"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Original Duration</label>
+                        <input
+                            type="text"
+                            value={activity.original_duration}
+                            onChange={(e) => setActivity({...activity, original_duration: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="5"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">New Rem Duration</label>
+                        <input
+                            type="text"
+                            value={activity.rem_duration}
+                            onChange={(e) => setActivity({...activity, rem_duration: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="3"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Actual Start</label>
+                        <input
+                            type="text"
+                            value={activity.actual_start}
+                            onChange={(e) => setActivity({...activity, actual_start: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="01/16/25"
+                        />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold mb-1">Actual Finish</label>
+                        <input
+                            type="text"
+                            value={activity.actual_finish}
+                            onChange={(e) => setActivity({...activity, actual_finish: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            placeholder="01/19/25"
+                        />
+                    </div>
+
+                    <div className="col-span-2">
+                        <label className="block text-sm font-semibold mb-1">Comments</label>
+                        <textarea
+                            value={activity.comments}
+                            onChange={(e) => setActivity({...activity, comments: e.target.value})}
+                            className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            rows="3"
+                            placeholder="Additional notes..."
+                        />
+                    </div>
+                </div>
+
+                <div className="flex justify-end gap-3 mt-6">
+                    <button onClick={onClose} className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition">
+                        Cancel
+                    </button>
+                    <button onClick={handleSubmit} className="px-6 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition">
+                        <i className="fas fa-plus mr-2"></i>
+                        Add Activity
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// Duplicate Detection Modal Component
+// Intelligent modal for handling duplicate activities during import
+
+
+function DuplicateDetectionModal({
+    analysis,
+    currentUpdate,
+    allUpdates,
+    onCancel,
+    onImportNewOnly,
+    onReplaceAndImport,
+    onCreateNewUpdate
+}) {
+    const { duplicates, updates, newActivities, statistics, recommendation } = analysis;
+    const [selectedOption, setSelectedOption] = React.useState(null);
+    const [showDetails, setShowDetails] = React.useState(false);
+
+    const nextUpdateNumber = getNextUpdateNumber(allUpdates);
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onCancel()}>
+            <div className="modal-content glass rounded-2xl p-8 max-w-5xl w-full max-h-[90vh] overflow-y-auto">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-3xl font-bold text-gray-800">
+                        <i className="fas fa-search-plus mr-3 text-blue-600"></i>
+                        Duplicate Detection Analysis
+                    </h2>
+                    <button
+                        onClick={onCancel}
+                        className="text-gray-400 hover:text-gray-600 text-2xl"
+                    >
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
+
+                {/* Statistics Dashboard */}
+                <div className="grid grid-cols-4 gap-4 mb-6">
+                    <div className="glass rounded-xl p-4 text-center">
+                        <div className="text-3xl font-bold text-blue-600">{statistics.total}</div>
+                        <div className="text-sm text-gray-600 mt-1">Total Activities</div>
+                    </div>
+                    <div className="glass rounded-xl p-4 text-center">
+                        <div className="text-3xl font-bold text-green-600">{statistics.newCount}</div>
+                        <div className="text-sm text-gray-600 mt-1">New Activities</div>
+                    </div>
+                    <div className="glass rounded-xl p-4 text-center">
+                        <div className="text-3xl font-bold text-yellow-600">{statistics.updateCount}</div>
+                        <div className="text-sm text-gray-600 mt-1">With Changes</div>
+                    </div>
+                    <div className="glass rounded-xl p-4 text-center">
+                        <div className="text-3xl font-bold text-red-600">{statistics.duplicateCount}</div>
+                        <div className="text-sm text-gray-600 mt-1">Exact Duplicates</div>
+                    </div>
+                </div>
+
+                {/* AI Recommendation */}
+                <div className={`bg-${recommendation.color}-50 border-l-4 border-${recommendation.color}-500 rounded-lg p-6 mb-6`}>
+                    <div className="flex items-start">
+                        <i className={`fas ${recommendation.icon} text-${recommendation.color}-600 text-3xl mr-4 mt-1`}></i>
+                        <div className="flex-1">
+                            <h3 className="text-xl font-bold text-gray-800 mb-2">
+                                <i className="fas fa-robot mr-2"></i>
+                                AI Recommendation: {recommendation.title}
+                            </h3>
+                            <p className="text-gray-700 mb-2">{recommendation.message}</p>
+                            <p className="text-gray-600 text-sm italic">{recommendation.suggestion}</p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Options */}
+                <div className="space-y-4 mb-6">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">
+                        <i className="fas fa-tasks mr-2"></i>
+                        Choose Import Strategy:
+                    </h3>
+
+                    {/* Option 1: Create New Update (if recommended) */}
+                    {recommendation.type === 'CREATE_NEW_UPDATE' && (
+                        <button
+                            onClick={() => setSelectedOption('new-update')}
+                            className={`w-full text-left p-4 rounded-xl border-2 transition ${
+                                selectedOption === 'new-update'
+                                    ? 'border-blue-500 bg-blue-50'
+                                    : 'border-gray-300 hover:border-blue-300'
+                            }`}
+                        >
+                            <div className="flex items-start">
+                                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center mr-4 mt-1 ${
+                                    selectedOption === 'new-update' ? 'border-blue-500 bg-blue-500' : 'border-gray-300'
+                                }`}>
+                                    {selectedOption === 'new-update' && <i className="fas fa-check text-white text-xs"></i>}
+                                </div>
+                                <div className="flex-1">
+                                    <h4 className="font-bold text-gray-800 mb-1">
+                                        <i className="fas fa-plus-square text-blue-600 mr-2"></i>
+                                        Create Update {nextUpdateNumber} (Recommended)
+                                    </h4>
+                                    <p className="text-sm text-gray-600">
+                                        Create a new update version with all {statistics.total} activities.
+                                        This preserves historical data and allows you to track changes over time.
+                                        Your current update ({currentUpdate.name}) will remain unchanged.
+                                    </p>
+                                </div>
+                            </div>
+                        </button>
+                    )}
+
+                    {/* Option 2: Import New Only */}
+                    <button
+                        onClick={() => setSelectedOption('new-only')}
+                        className={`w-full text-left p-4 rounded-xl border-2 transition ${
+                            selectedOption === 'new-only'
+                                ? 'border-green-500 bg-green-50'
+                                : 'border-gray-300 hover:border-green-300'
+                        }`}
+                    >
+                        <div className="flex items-start">
+                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center mr-4 mt-1 ${
+                                selectedOption === 'new-only' ? 'border-green-500 bg-green-500' : 'border-gray-300'
+                            }`}>
+                                {selectedOption === 'new-only' && <i className="fas fa-check text-white text-xs"></i>}
+                            </div>
+                            <div className="flex-1">
+                                <h4 className="font-bold text-gray-800 mb-1">
+                                    <i className="fas fa-plus-circle text-green-600 mr-2"></i>
+                                    Import {statistics.newCount} New Activities Only
+                                </h4>
+                                <p className="text-sm text-gray-600">
+                                    Add only new activities to {currentUpdate.name}.
+                                    Skip all duplicates ({statistics.duplicateCount}) and activities with changes ({statistics.updateCount}).
+                                </p>
+                            </div>
+                        </div>
+                    </button>
+
+                    {/* Option 3: Replace and Import */}
+                    {statistics.updateCount > 0 && (
+                        <button
+                            onClick={() => setSelectedOption('replace-and-import')}
+                            className={`w-full text-left p-4 rounded-xl border-2 transition ${
+                                selectedOption === 'replace-and-import'
+                                    ? 'border-yellow-500 bg-yellow-50'
+                                    : 'border-gray-300 hover:border-yellow-300'
+                            }`}
+                        >
+                            <div className="flex items-start">
+                                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center mr-4 mt-1 ${
+                                    selectedOption === 'replace-and-import' ? 'border-yellow-500 bg-yellow-500' : 'border-gray-300'
+                                }`}>
+                                    {selectedOption === 'replace-and-import' && <i className="fas fa-check text-white text-xs"></i>}
+                                </div>
+                                <div className="flex-1">
+                                    <h4 className="font-bold text-gray-800 mb-1">
+                                        <i className="fas fa-sync-alt text-yellow-600 mr-2"></i>
+                                        Replace {statistics.updateCount} Activities + Import {statistics.newCount} New
+                                    </h4>
+                                    <p className="text-sm text-gray-600">
+                                        Update existing activities with new data and add new activities.
+                                        Skip exact duplicates ({statistics.duplicateCount}).
+                                        <span className="text-yellow-700 font-semibold ml-1">Warning: This will modify {currentUpdate.name}.</span>
+                                    </p>
+                                </div>
+                            </div>
+                        </button>
+                    )}
+                </div>
+
+                {/* Details Toggle */}
+                <button
+                    onClick={() => setShowDetails(!showDetails)}
+                    className="w-full text-left px-4 py-3 bg-gray-100 hover:bg-gray-200 rounded-lg transition mb-4"
+                >
+                    <i className={`fas fa-chevron-${showDetails ? 'up' : 'down'} mr-2`}></i>
+                    {showDetails ? 'Hide' : 'Show'} Detailed Activity Breakdown
+                </button>
+
+                {/* Detailed Breakdown */}
+                {showDetails && (
+                    <div className="space-y-6 mb-6">
+                        {/* New Activities */}
+                        {newActivities.length > 0 && (
+                            <div className="glass rounded-xl p-4">
+                                <h4 className="font-bold text-gray-800 mb-3">
+                                    <i className="fas fa-plus-circle text-green-600 mr-2"></i>
+                                    New Activities ({newActivities.length})
+                                </h4>
+                                <div className="max-h-60 overflow-y-auto space-y-2">
+                                    {newActivities.slice(0, 20).map((act, idx) => (
+                                        <div key={idx} className="p-3 bg-white rounded-lg border border-green-200 text-sm">
+                                            <div className="font-mono font-semibold text-gray-800">{act.id}</div>
+                                            <div className="text-gray-600">{act.name}</div>
+                                            <div className="text-xs text-gray-500 mt-1">
+                                                {act.start} → {act.finish}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {newActivities.length > 20 && (
+                                        <div className="text-center text-sm text-gray-500 py-2">
+                                            And {newActivities.length - 20} more...
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Activities with Changes */}
+                        {updates.length > 0 && (
+                            <div className="glass rounded-xl p-4">
+                                <h4 className="font-bold text-gray-800 mb-3">
+                                    <i className="fas fa-sync-alt text-yellow-600 mr-2"></i>
+                                    Activities with Changes ({updates.length})
+                                </h4>
+                                <div className="max-h-60 overflow-y-auto space-y-2">
+                                    {updates.slice(0, 10).map((update, idx) => (
+                                        <div key={idx} className="p-3 bg-white rounded-lg border border-yellow-200 text-sm">
+                                            <div className="font-mono font-semibold text-gray-800">{update.activity.id}</div>
+                                            <div className="text-gray-600">{update.activity.name}</div>
+                                            <div className="mt-2 space-y-1">
+                                                {update.differences.map((diff, i) => (
+                                                    <div key={i} className="flex items-center text-xs">
+                                                        <span className="text-gray-500 capitalize w-20">{diff.field}:</span>
+                                                        <span className="text-red-600 line-through mr-2">{diff.oldValue || '(empty)'}</span>
+                                                        <i className="fas fa-arrow-right text-gray-400 mr-2"></i>
+                                                        <span className="text-green-600">{diff.newValue || '(empty)'}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {updates.length > 10 && (
+                                        <div className="text-center text-sm text-gray-500 py-2">
+                                            And {updates.length - 10} more...
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Exact Duplicates */}
+                        {duplicates.length > 0 && (
+                            <div className="glass rounded-xl p-4">
+                                <h4 className="font-bold text-gray-800 mb-3">
+                                    <i className="fas fa-copy text-red-600 mr-2"></i>
+                                    Exact Duplicates ({duplicates.length})
+                                </h4>
+                                <div className="max-h-60 overflow-y-auto space-y-2">
+                                    {duplicates.slice(0, 10).map((dup, idx) => (
+                                        <div key={idx} className="p-3 bg-white rounded-lg border border-red-200 text-sm">
+                                            <div className="font-mono font-semibold text-gray-800">{dup.activity.id}</div>
+                                            <div className="text-gray-600">{dup.activity.name}</div>
+                                            <div className="text-xs text-gray-500 mt-1">
+                                                {dup.activity.start} → {dup.activity.finish}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {duplicates.length > 10 && (
+                                        <div className="text-center text-sm text-gray-500 py-2">
+                                            And {duplicates.length - 10} more...
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-3 mt-6 pt-4 border-t-2 border-gray-200">
+                    <button
+                        onClick={onCancel}
+                        className="px-6 py-3 bg-gray-300 hover:bg-gray-400 rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-times mr-2"></i>
+                        Cancel Import
+                    </button>
+
+                    {selectedOption === 'new-update' && (
+                        <button
+                            onClick={() => onCreateNewUpdate(newActivities, updates, duplicates)}
+                            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium"
+                        >
+                            <i className="fas fa-plus-square mr-2"></i>
+                            Create Update {nextUpdateNumber}
+                        </button>
+                    )}
+
+                    {selectedOption === 'new-only' && (
+                        <button
+                            onClick={() => onImportNewOnly(newActivities)}
+                            className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg transition font-medium"
+                        >
+                            <i className="fas fa-plus-circle mr-2"></i>
+                            Import {statistics.newCount} New Activities
+                        </button>
+                    )}
+
+                    {selectedOption === 'replace-and-import' && (
+                        <button
+                            onClick={() => onReplaceAndImport(newActivities, updates)}
+                            className="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg transition font-medium"
+                        >
+                            <i className="fas fa-sync-alt mr-2"></i>
+                            Replace & Import ({statistics.updateCount + statistics.newCount} activities)
+                        </button>
+                    )}
+
+                    {!selectedOption && (
+                        <button
+                            disabled
+                            className="px-6 py-3 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed"
+                        >
+                            Select an Option Above
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Bulk Contractor Assignment Modal Component
+ *
+ * 2-step wizard for assigning contractors to multiple activities:
+ * 1. Filter activities (by contractor, area, floor, zone, name, dates)
+ * 2. Assign contractor name to filtered activities
+ *
+ * Features:
+ * - Multi-criteria filtering
+ * - "Select All" shortcut
+ * - Preview before assignment
+ * - Shows current contractor for each activity
+ *
+ * @param {Object} props
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {Object} props.currentUpdate - Current update with activities
+ * @param {Function} props.onAssign - Callback to assign contractor (activities, contractorName)
+ */
+
+
+function BulkContractorModal({ onClose, currentUpdate, onAssign }) {
+    const [step, setStep] = useState(1); // 1: Filter, 2: Assign
+    const [filters, setFilters] = useState({
+        contractor: '',
+        area: '',
+        floor: '',
+        zone: '',
+        activityName: '',
+        startDate: '',
+        endDate: ''
+    });
+    const [contractorName, setContractorName] = useState('');
+    const [filteredActivities, setFilteredActivities] = useState([]);
+
+    // Get unique values for dropdowns
+    const uniqueContractors = [...new Set(currentUpdate.activities.map(a => a.contractor).filter(Boolean))].sort();
+    const uniqueAreas = [...new Set(currentUpdate.activities.map(a => a.area).filter(Boolean))].sort();
+    const uniqueFloors = [...new Set(currentUpdate.activities.map(a => a.floor).filter(Boolean))].sort();
+    const uniqueZones = [...new Set(currentUpdate.activities.map(a => a.zone).filter(Boolean))].sort();
+
+    const handleApplyFilters = () => {
+        let activities = [...currentUpdate.activities];
+
+        // Apply filters
+        if (filters.contractor) {
+            activities = activities.filter(a => a.contractor === filters.contractor);
+        }
+        if (filters.area) {
+            activities = activities.filter(a => a.area === filters.area);
+        }
+        if (filters.floor) {
+            activities = activities.filter(a => a.floor === filters.floor);
+        }
+        if (filters.zone) {
+            activities = activities.filter(a => a.zone === filters.zone);
+        }
+        if (filters.activityName) {
+            activities = activities.filter(a =>
+                a.name && a.name.toLowerCase().includes(filters.activityName.toLowerCase())
+            );
+        }
+        if (filters.startDate) {
+            activities = activities.filter(a => a.start && a.start >= filters.startDate);
+        }
+        if (filters.endDate) {
+            activities = activities.filter(a => a.finish && a.finish <= filters.endDate);
+        }
+
+        setFilteredActivities(activities);
+        setStep(2);
+    };
+
+    const handleAssign = () => {
+        if (!contractorName.trim()) {
+            alert('Please enter a contractor name');
+            return;
+        }
+
+        if (filteredActivities.length === 0) {
+            alert('No activities selected');
+            return;
+        }
+
+        // Assign contractor to all filtered activities
+        onAssign(filteredActivities, contractorName.trim());
+        onClose();
+    };
+
+    const handleSelectAll = () => {
+        setFilters({
+            contractor: '',
+            area: '',
+            floor: '',
+            zone: '',
+            activityName: '',
+            startDate: '',
+            endDate: ''
+        });
+        setFilteredActivities([...currentUpdate.activities]);
+        setStep(2);
+    };
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="modal-content glass rounded-2xl p-8 max-w-4xl w-full">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-3xl font-bold text-gray-800">
+                        <i className="fas fa-users-cog mr-3 text-purple-600"></i>
+                        Bulk Contractor Assignment
+                    </h2>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl">
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
+
+                {/* Step Indicator */}
+                <div className="flex items-center gap-4 mb-8">
+                    <div className={`flex items-center ${step >= 1 ? 'text-purple-600' : 'text-gray-400'}`}>
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center border-2 ${
+                            step >= 1 ? 'border-purple-600 bg-purple-50' : 'border-gray-300'
+                        }`}>
+                            {step > 1 ? <i className="fas fa-check"></i> : '1'}
+                        </div>
+                        <span className="ml-2 font-semibold">Filter Activities</span>
+                    </div>
+                    <div className="flex-1 h-0.5 bg-gray-300"></div>
+                    <div className={`flex items-center ${step >= 2 ? 'text-purple-600' : 'text-gray-400'}`}>
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center border-2 ${
+                            step >= 2 ? 'border-purple-600 bg-purple-50' : 'border-gray-300'
+                        }`}>
+                            2
+                        </div>
+                        <span className="ml-2 font-semibold">Assign Contractor</span>
+                    </div>
+                </div>
+
+                {/* STEP 1: Filter Activities */}
+                {step === 1 && (
+                    <div className="fade-in">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4">
+                            <i className="fas fa-filter mr-2 text-blue-600"></i>
+                            Step 1: Select Activities to Update
+                        </h3>
+                        <p className="text-sm text-gray-600 mb-6">
+                            Filter to select specific activities, or click "Select All" to update all activities
+                        </p>
+
+                        <div className="space-y-4 mb-6">
+                            {/* Existing Contractor Filter */}
+                            <div>
+                                <label className="block font-semibold mb-2">Current Contractor:</label>
+                                <select
+                                    value={filters.contractor}
+                                    onChange={(e) => setFilters({...filters, contractor: e.target.value})}
+                                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                >
+                                    <option value="">All Contractors (including unassigned)</option>
+                                    {uniqueContractors.map(contractor => (
+                                        <option key={contractor} value={contractor}>{contractor}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                {/* Area Filter */}
+                                <div>
+                                    <label className="block font-semibold mb-2">Area:</label>
+                                    <select
+                                        value={filters.area}
+                                        onChange={(e) => setFilters({...filters, area: e.target.value})}
+                                        className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    >
+                                        <option value="">All Areas</option>
+                                        {uniqueAreas.map(area => (
+                                            <option key={area} value={area}>{area}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {/* Floor Filter */}
+                                <div>
+                                    <label className="block font-semibold mb-2">Floor:</label>
+                                    <select
+                                        value={filters.floor}
+                                        onChange={(e) => setFilters({...filters, floor: e.target.value})}
+                                        className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    >
+                                        <option value="">All Floors</option>
+                                        {uniqueFloors.map(floor => (
+                                            <option key={floor} value={floor}>{floor}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {/* Zone Filter */}
+                                <div>
+                                    <label className="block font-semibold mb-2">Zone:</label>
+                                    <select
+                                        value={filters.zone}
+                                        onChange={(e) => setFilters({...filters, zone: e.target.value})}
+                                        className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    >
+                                        <option value="">All Zones</option>
+                                        {uniqueZones.map(zone => (
+                                            <option key={zone} value={zone}>{zone}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {/* Activity Name Filter */}
+                                <div>
+                                    <label className="block font-semibold mb-2">Activity Name (contains):</label>
+                                    <input
+                                        type="text"
+                                        value={filters.activityName}
+                                        onChange={(e) => setFilters({...filters, activityName: e.target.value})}
+                                        placeholder="e.g., DRYWALL, FRAME..."
+                                        className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* Date Range Filters */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block font-semibold mb-2">Start Date (from):</label>
+                                    <input
+                                        type="text"
+                                        value={filters.startDate}
+                                        onChange={(e) => setFilters({...filters, startDate: e.target.value})}
+                                        placeholder="MM/DD/YY"
+                                        className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block font-semibold mb-2">End Date (to):</label>
+                                    <input
+                                        type="text"
+                                        value={filters.endDate}
+                                        onChange={(e) => setFilters({...filters, endDate: e.target.value})}
+                                        placeholder="MM/DD/YY"
+                                        className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Action Buttons */}
+                        <div className="flex justify-between gap-3">
+                            <button
+                                onClick={onClose}
+                                className="px-6 py-3 bg-gray-300 hover:bg-gray-400 rounded-lg transition font-medium"
+                            >
+                                <i className="fas fa-times mr-2"></i>
+                                Cancel
+                            </button>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={handleSelectAll}
+                                    className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium"
+                                >
+                                    <i className="fas fa-check-double mr-2"></i>
+                                    Select All Activities
+                                </button>
+                                <button
+                                    onClick={handleApplyFilters}
+                                    className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition font-medium"
+                                >
+                                    <i className="fas fa-arrow-right mr-2"></i>
+                                    Apply Filters & Continue
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* STEP 2: Assign Contractor */}
+                {step === 2 && (
+                    <div className="fade-in">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4">
+                            <i className="fas fa-user-tag mr-2 text-purple-600"></i>
+                            Step 2: Assign Contractor to Selected Activities
+                        </h3>
+
+                        {/* Preview Stats */}
+                        <div className="bg-purple-50 border-l-4 border-purple-500 rounded-lg p-4 mb-6">
+                            <div className="flex items-center gap-3">
+                                <i className="fas fa-info-circle text-purple-600 text-2xl"></i>
+                                <div>
+                                    <p className="font-semibold text-gray-800">
+                                        {filteredActivities.length} {filteredActivities.length === 1 ? 'activity' : 'activities'} selected
+                                    </p>
+                                    <p className="text-sm text-gray-600 mt-1">
+                                        The contractor name will be assigned to all selected activities
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Contractor Name Input */}
+                        <div className="mb-6">
+                            <label className="block font-semibold mb-2 text-lg">Contractor Name:</label>
+                            <input
+                                type="text"
+                                value={contractorName}
+                                onChange={(e) => setContractorName(e.target.value)}
+                                placeholder="e.g., M3, ACME Construction, XYZ Corp..."
+                                className="w-full px-4 py-3 border-2 border-purple-300 rounded-lg focus:border-purple-500 focus:outline-none text-lg"
+                                autoFocus
+                            />
+                        </div>
+
+                        {/* Preview List */}
+                        {filteredActivities.length > 0 && (
+                            <div className="mb-6">
+                                <h4 className="font-semibold text-gray-800 mb-3">
+                                    Preview - Activities to Update:
+                                </h4>
+                                <div className="bg-white border-2 border-gray-200 rounded-lg max-h-60 overflow-y-auto p-4">
+                                    {filteredActivities.slice(0, 10).map((activity, idx) => (
+                                        <div key={idx} className="py-2 border-b border-gray-100 last:border-0">
+                                            <div className="flex items-center gap-3">
+                                                <span className="font-mono text-sm text-gray-600">{activity.id}</span>
+                                                <span className="text-sm text-gray-800 flex-1">{activity.name}</span>
+                                                {activity.contractor && (
+                                                    <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+                                                        Current: {activity.contractor}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {filteredActivities.length > 10 && (
+                                        <div className="text-center text-sm text-gray-500 py-2 mt-2">
+                                            And {filteredActivities.length - 10} more activities...
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Action Buttons */}
+                        <div className="flex justify-between gap-3">
+                            <button
+                                onClick={() => setStep(1)}
+                                className="px-6 py-3 bg-gray-300 hover:bg-gray-400 rounded-lg transition font-medium"
+                            >
+                                <i className="fas fa-arrow-left mr-2"></i>
+                                Back to Filters
+                            </button>
+                            <button
+                                onClick={handleAssign}
+                                className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition font-medium"
+                            >
+                                <i className="fas fa-check mr-2"></i>
+                                Assign to {filteredActivities.length} {filteredActivities.length === 1 ? 'Activity' : 'Activities'}
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Export Options Modal Component
+ *
+ * Provides filtering and sorting options for Excel export:
+ * - Filter by contractor, area, floor, zone, activity name
+ * - Sort by any field (ID, name, dates, etc.)
+ * - Sort order (ascending/descending)
+ *
+ * @param {Object} props
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {Object} props.currentUpdate - Current update with activities
+ * @param {Function} props.onExport - Callback to export with filters and sorting
+ */
+
+
+function ExportOptionsModal({ onClose, currentUpdate, onExport }) {
+    const [exportFilters, setExportFilters] = useState({
+        contractor: '',
+        area: '',
+        floor: '',
+        zone: '',
+        activityName: ''
+    });
+    const [sortBy, setSortBy] = useState('start'); // Default: sort by Start Date
+    const [sortOrder, setSortOrder] = useState('asc'); // asc or desc
+
+    const handleExport = () => {
+        onExport(exportFilters, sortBy, sortOrder);
+        onClose();
+    };
+
+    // Get unique contractors, areas, floors, and zones for dropdowns
+    const uniqueContractors = [...new Set(currentUpdate.activities.map(a => a.contractor).filter(Boolean))].sort();
+    const uniqueAreas = [...new Set(currentUpdate.activities.map(a => a.area).filter(Boolean))].sort();
+    const uniqueFloors = [...new Set(currentUpdate.activities.map(a => a.floor).filter(Boolean))].sort();
+    const uniqueZones = [...new Set(currentUpdate.activities.map(a => a.zone).filter(Boolean))].sort();
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="modal-content glass rounded-2xl p-8 max-w-3xl w-full">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-3xl font-bold text-gray-800">
+                        <i className="fas fa-file-export mr-3 text-green-600"></i>
+                        Export Options
+                    </h2>
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl">
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
+
+                {/* STEP 1: Filters */}
+                <div className="mb-8">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">
+                        <i className="fas fa-filter mr-2 text-blue-600"></i>
+                        Step 1: Filter Data (Optional)
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">Leave empty to export all activities</p>
+
+                    <div className="space-y-4">
+                        {/* Contractor Filter */}
+                        <div>
+                            <label className="block font-semibold mb-2">Filter by Contractor:</label>
+                            <select
+                                value={exportFilters.contractor}
+                                onChange={(e) => setExportFilters({...exportFilters, contractor: e.target.value})}
+                                className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            >
+                                <option value="">All Contractors</option>
+                                {uniqueContractors.map(contractor => (
+                                    <option key={contractor} value={contractor}>{contractor}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* Area Filter */}
+                        <div>
+                            <label className="block font-semibold mb-2">Filter by Area:</label>
+                            <select
+                                value={exportFilters.area}
+                                onChange={(e) => setExportFilters({...exportFilters, area: e.target.value})}
+                                className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            >
+                                <option value="">All Areas</option>
+                                {uniqueAreas.map(area => (
+                                    <option key={area} value={area}>{area}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* Floor Filter */}
+                        <div>
+                            <label className="block font-semibold mb-2">Filter by Floor:</label>
+                            <select
+                                value={exportFilters.floor}
+                                onChange={(e) => setExportFilters({...exportFilters, floor: e.target.value})}
+                                className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            >
+                                <option value="">All Floors</option>
+                                {uniqueFloors.map(floor => (
+                                    <option key={floor} value={floor}>{floor}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* Zone Filter */}
+                        <div>
+                            <label className="block font-semibold mb-2">Filter by Zone:</label>
+                            <select
+                                value={exportFilters.zone}
+                                onChange={(e) => setExportFilters({...exportFilters, zone: e.target.value})}
+                                className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            >
+                                <option value="">All Zones</option>
+                                {uniqueZones.map(zone => (
+                                    <option key={zone} value={zone}>{zone}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        {/* Activity Name Filter */}
+                        <div>
+                            <label className="block font-semibold mb-2">Filter by Activity Name (contains):</label>
+                            <input
+                                type="text"
+                                value={exportFilters.activityName}
+                                onChange={(e) => setExportFilters({...exportFilters, activityName: e.target.value})}
+                                placeholder="e.g., DRYWALL, FRAME, PAINT..."
+                                className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                {/* STEP 2: Sort Options */}
+                <div className="mb-8">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4">
+                        <i className="fas fa-sort mr-2 text-purple-600"></i>
+                        Step 2: Sort Data
+                    </h3>
+
+                    <div className="grid grid-cols-2 gap-4">
+                        {/* Sort By Field */}
+                        <div>
+                            <label className="block font-semibold mb-2">Sort By:</label>
+                            <select
+                                value={sortBy}
+                                onChange={(e) => setSortBy(e.target.value)}
+                                className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                            >
+                                <option value="id">Activity ID</option>
+                                <option value="name">Activity Name</option>
+                                <option value="contractor">Contractor</option>
+                                <option value="area">Area</option>
+                                <option value="floor">Floor</option>
+                                <option value="zone">Zone</option>
+                                <option value="start">Start Date</option>
+                                <option value="finish">Finish Date</option>
+                            </select>
+                        </div>
+
+                        {/* Sort Order */}
+                        <div>
+                            <label className="block font-semibold mb-2">Order:</label>
+                            <select
+                                value={sortOrder}
+                                onChange={(e) => setSortOrder(e.target.value)}
+                                className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                            >
+                                <option value="asc">Ascending (A-Z, 0-9, Oldest First)</option>
+                                <option value="desc">Descending (Z-A, 9-0, Newest First)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Preview Info */}
+                <div className="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4 mb-6">
+                    <i className="fas fa-info-circle text-blue-600 mr-2"></i>
+                    <span className="text-sm text-blue-800">
+                        Export will include all filtered activities, sorted by <strong>{sortBy}</strong> in <strong>{sortOrder === 'asc' ? 'ascending' : 'descending'}</strong> order.
+                    </span>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-3">
+                    <button
+                        onClick={onClose}
+                        className="px-6 py-3 bg-gray-300 hover:bg-gray-400 rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-times mr-2"></i>
+                        Cancel
+                    </button>
+                    <button
+                        onClick={handleExport}
+                        className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-file-excel mr-2"></i>
+                        Export to Excel
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Configure Activity ID Codes Modal Component
+ *
+ * Allows users to customize Activity ID code meanings:
+ * - Area codes (E, D, C, B, F, etc.) with name and color
+ * - Floor codes (LL, 01, 02, RF, etc.) with custom names
+ * - Zone codes (INT, K, BAT, etc.) with custom names
+ *
+ * Includes visual ID pattern diagram showing: E - LL - INT - 1230
+ *
+ * @param {Object} props
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {Object} props.areaConfig - Area configuration object
+ * @param {Object} props.idPatternConfig - ID pattern configuration (floors, zones)
+ * @param {Function} props.onSave - Callback to save configuration
+ */
+
+
+function ConfigureCodesModal({ onClose, areaConfig, idPatternConfig, onSave }) {
+    const [areas, setAreas] = useState({ ...areaConfig });
+    const [floors, setFloors] = useState({ ...idPatternConfig.floors });
+    const [zones, setZones] = useState({ ...idPatternConfig.zones });
+    const [selectedTab, setSelectedTab] = useState('areas'); // 'areas', 'floors', 'zones'
+
+    const handleSave = () => {
+        onSave({
+            areas,
+            idPatternConfig: {
+                floors,
+                zones
+            }
+        });
+        onClose();
+    };
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="modal-content glass rounded-2xl p-8 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-3xl font-bold text-gray-800">
+                        <i className="fas fa-cog mr-3 text-purple-600"></i>
+                        Configure Activity ID Codes
+                    </h2>
+                    <button
+                        onClick={onClose}
+                        className="text-gray-400 hover:text-gray-600 text-2xl"
+                    >
+                        <i className="fas fa-times"></i>
+                    </button>
+                </div>
+
+                {/* Info Banner with Visual ID Pattern */}
+                <div className="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-3 mb-4">
+                    <div className="flex items-start gap-3">
+                        <i className="fas fa-info-circle text-blue-600 text-lg mt-0.5"></i>
+                        <div className="flex-1">
+                            <p className="text-xs text-blue-800 mb-2">
+                                Activity IDs follow this pattern - customize what each code means:
+                            </p>
+                            <div className="bg-white rounded-lg p-3 border border-blue-200">
+                                <div className="flex items-center justify-center gap-2 mb-2">
+                                    <span className="text-xl font-bold text-purple-700 font-mono">E</span>
+                                    <span className="text-xl font-bold text-gray-400">-</span>
+                                    <span className="text-xl font-bold text-indigo-700 font-mono">LL</span>
+                                    <span className="text-xl font-bold text-gray-400">-</span>
+                                    <span className="text-xl font-bold text-teal-700 font-mono">INT</span>
+                                    <span className="text-xl font-bold text-gray-400">-</span>
+                                    <span className="text-xl font-bold text-gray-600 font-mono">1230</span>
+                                </div>
+                                <div className="flex items-start justify-center gap-6 text-[10px]">
+                                    <div className="w-8 text-center">
+                                        <div className="text-purple-600 font-bold mb-0.5">↑</div>
+                                        <div className="text-purple-700 font-semibold leading-tight">Area</div>
+                                    </div>
+                                    <div className="w-10"></div>
+                                    <div className="w-10 text-center">
+                                        <div className="text-indigo-600 font-bold mb-0.5">↑</div>
+                                        <div className="text-indigo-700 font-semibold leading-tight">Floor</div>
+                                    </div>
+                                    <div className="w-10"></div>
+                                    <div className="w-12 text-center">
+                                        <div className="text-teal-600 font-bold mb-0.5">↑</div>
+                                        <div className="text-teal-700 font-semibold leading-tight">Zone</div>
+                                    </div>
+                                    <div className="w-10"></div>
+                                    <div className="w-16 text-center">
+                                        <div className="text-gray-600 font-bold mb-0.5">↑</div>
+                                        <div className="text-gray-700 font-semibold leading-tight">Number</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Tabs */}
+                <div className="flex gap-2 mb-6 border-b-2 border-gray-200">
+                    <button
+                        onClick={() => setSelectedTab('areas')}
+                        className={`px-6 py-3 font-semibold transition ${
+                            selectedTab === 'areas'
+                                ? 'text-purple-600 border-b-4 border-purple-600 -mb-0.5'
+                                : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                    >
+                        <i className="fas fa-map-marker-alt mr-2"></i>
+                        Areas
+                    </button>
+                    <button
+                        onClick={() => setSelectedTab('floors')}
+                        className={`px-6 py-3 font-semibold transition ${
+                            selectedTab === 'floors'
+                                ? 'text-purple-600 border-b-4 border-purple-600 -mb-0.5'
+                                : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                    >
+                        <i className="fas fa-layer-group mr-2"></i>
+                        Floors
+                    </button>
+                    <button
+                        onClick={() => setSelectedTab('zones')}
+                        className={`px-6 py-3 font-semibold transition ${
+                            selectedTab === 'zones'
+                                ? 'text-purple-600 border-b-4 border-purple-600 -mb-0.5'
+                                : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                    >
+                        <i className="fas fa-th-large mr-2"></i>
+                        Zones
+                    </button>
+                </div>
+
+                {/* Areas Tab */}
+                {selectedTab === 'areas' && (
+                    <div className="space-y-4">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4">Area Codes</h3>
+                        {Object.keys(areas).map(code => (
+                            <div key={code} className="flex items-center gap-4 p-4 bg-white rounded-lg border-2 border-gray-200">
+                                <div className="w-20 font-mono font-bold text-lg text-gray-800">{code}</div>
+                                <i className="fas fa-arrow-right text-gray-400"></i>
+                                <input
+                                    type="text"
+                                    value={areas[code].name}
+                                    onChange={(e) => setAreas({
+                                        ...areas,
+                                        [code]: { ...areas[code], name: e.target.value }
+                                    })}
+                                    className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    placeholder="e.g., Area E, Dock, Loading Zone"
+                                />
+                                <input
+                                    type="color"
+                                    value={areas[code].color}
+                                    onChange={(e) => setAreas({
+                                        ...areas,
+                                        [code]: { ...areas[code], color: e.target.value }
+                                    })}
+                                    className="w-16 h-10 rounded cursor-pointer"
+                                    title="Choose color"
+                                />
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Floors Tab */}
+                {selectedTab === 'floors' && (
+                    <div className="space-y-4">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4">Floor Codes</h3>
+                        {Object.keys(floors).map(code => (
+                            <div key={code} className="flex items-center gap-4 p-4 bg-white rounded-lg border-2 border-gray-200">
+                                <div className="w-20 font-mono font-bold text-lg text-gray-800">{code}</div>
+                                <i className="fas fa-arrow-right text-gray-400"></i>
+                                <input
+                                    type="text"
+                                    value={floors[code]}
+                                    onChange={(e) => setFloors({
+                                        ...floors,
+                                        [code]: e.target.value
+                                    })}
+                                    className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    placeholder="e.g., 1st Floor, Zone 1, Lower Level"
+                                />
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Zones Tab */}
+                {selectedTab === 'zones' && (
+                    <div className="space-y-4">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4">Zone Codes</h3>
+                        {Object.keys(zones).map(code => (
+                            <div key={code} className="flex items-center gap-4 p-4 bg-white rounded-lg border-2 border-gray-200">
+                                <div className="w-20 font-mono font-bold text-lg text-gray-800">{code}</div>
+                                <i className="fas fa-arrow-right text-gray-400"></i>
+                                <input
+                                    type="text"
+                                    value={zones[code]}
+                                    onChange={(e) => setZones({
+                                        ...zones,
+                                        [code]: e.target.value
+                                    })}
+                                    className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-purple-500 focus:outline-none"
+                                    placeholder="e.g., Interior, Kitchen, Loading Zone"
+                                />
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Action Buttons */}
+                <div className="flex justify-end gap-3 mt-8 pt-6 border-t-2 border-gray-200">
+                    <button
+                        onClick={onClose}
+                        className="px-6 py-3 bg-gray-300 hover:bg-gray-400 rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-times mr-2"></i>
+                        Cancel
+                    </button>
+                    <button
+                        onClick={handleSave}
+                        className="px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-save mr-2"></i>
+                        Save Configuration
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+/**
+ * Import Wizard Modal Component
+ *
+ * 4-step wizard for importing Excel data:
+ * 1. Upload Excel file
+ * 2. Map columns to fields
+ * 3. Configure keyword filters
+ * 4. Preview and confirm import
+ *
+ * Features:
+ * - Auto-parsing of Activity IDs to extract Area/Floor/Zone
+ * - Saved filter presets per update
+ * - Bulk keyword import
+ * - Excel date conversion to MM/DD/YY format
+ *
+ * @param {Object} props
+ * @param {Function} props.onClose - Callback to close modal
+ * @param {Function} props.onComplete - Callback when import completes
+ * @param {Object} props.currentUpdate - Current update object
+ * @param {Function} props.onSaveFilters - Callback to save filter configuration
+ */
+
+
+// Import utilities that will be available globally
+// These are defined in the main app or imported modules
+
+function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
+    const [step, setStep] = useState(1); // 1: Upload, 2: Map, 3: Filter, 4: Preview
+    const [excelData, setExcelData] = useState(null);
+    const [headers, setHeaders] = useState([]);
+    const [columnMapping, setColumnMapping] = useState({});
+
+    // Auto-load saved filters from current update
+    const savedFilters = currentUpdate?.savedFilters;
+    const [filterConfig, setFilterConfig] = useState(
+        savedFilters || {
+            field: 'name',
+            keywords: []
+        }
+    );
+    const [keywordInput, setKeywordInput] = useState('');
+    const [bulkKeywordInput, setBulkKeywordInput] = useState('');
+    const [previewData, setPreviewData] = useState([]);
+    const fileInputRef = useRef(null);
+
+    const handleFileUpload = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            try {
+                const data = new Uint8Array(evt.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+
+                if (jsonData.length > 0) {
+                    setHeaders(jsonData[0]);
+                    setExcelData(jsonData.slice(1));
+                    setStep(2);
+                }
+            } catch (error) {
+                alert('Error reading file: ' + error.message);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    const handleMappingComplete = () => {
+        // Validate required fields are mapped
+        const requiredFields = FIELD_DEFINITIONS.filter(f => f.required);
+        const missingFields = requiredFields.filter(f => columnMapping[f.key] === undefined);
+
+        if (missingFields.length > 0) {
+            alert(`Please map required fields: ${missingFields.map(f => f.label).join(', ')}`);
+            return;
+        }
+
+        setStep(3);
+    };
+
+    const addKeyword = () => {
+        if (keywordInput.trim() && !filterConfig.keywords.includes(keywordInput.trim())) {
+            setFilterConfig({
+                ...filterConfig,
+                keywords: [...filterConfig.keywords, keywordInput.trim()]
+            });
+            setKeywordInput('');
+        }
+    };
+
+    const removeKeyword = (keyword) => {
+        setFilterConfig({
+            ...filterConfig,
+            keywords: filterConfig.keywords.filter(k => k !== keyword)
+        });
+    };
+
+    const handleBulkAdd = () => {
+        if (!bulkKeywordInput.trim()) return;
+
+        // First, replace all newlines with spaces to handle wrapped text
+        const cleanedInput = bulkKeywordInput.replace(/\n/g, ' ');
+
+        // Parse by comma or semicolon (primary separators)
+        const keywords = cleanedInput
+            .split(/[,;]+/)
+            .map(k => k.trim())
+            .filter(k => k.length > 0)
+            .filter(k => !filterConfig.keywords.includes(k)); // Only add unique keywords
+
+        if (keywords.length > 0) {
+            setFilterConfig({
+                ...filterConfig,
+                keywords: [...filterConfig.keywords, ...keywords]
+            });
+            setBulkKeywordInput('');
+            alert(`✅ Added ${keywords.length} keywords successfully!`);
+        } else {
+            alert('No new keywords to add (duplicates or empty input)');
+        }
+    };
+
+    // Convert Excel serial date to MM/DD/YY format
+    const excelDateToString = (serial) => {
+        if (!serial || serial === '') return '';
+
+        // If it's already a string date, return it
+        if (typeof serial === 'string' && serial.includes('/')) return serial;
+
+        // Convert Excel serial number to date
+        if (typeof serial === 'number') {
+            const utc_days = Math.floor(serial - 25569);
+            const utc_value = utc_days * 86400;
+            const date_info = new Date(utc_value * 1000);
+
+            const month = String(date_info.getUTCMonth() + 1).padStart(2, '0');
+            const day = String(date_info.getUTCDate()).padStart(2, '0');
+            const year = String(date_info.getUTCFullYear()).slice(-2);
+
+            return `${month}/${day}/${year}`;
+        }
+
+        return '';
+    };
+
+    const applyFiltersAndPreview = () => {
+        // Check if user typed keywords but didn't click "Add All Keywords"
+        if (bulkKeywordInput.trim().length > 0 && filterConfig.keywords.length === 0) {
+            const confirmed = confirm(
+                '⚠️ ATENCIÓN: Escribiste keywords en el textarea pero NO hiciste click en "Add All Keywords".\n\n' +
+                'Si continúas SIN agregar filtros, se importarán TODAS las actividades del Excel.\n\n' +
+                '¿Quieres continuar sin filtros y ver TODAS las actividades?'
+            );
+            if (!confirmed) {
+                return; // User wants to go back and add the keywords
+            }
+        }
+
+        // Check if user typed a single keyword but didn't click "Add"
+        if (keywordInput.trim().length > 0 && filterConfig.keywords.length === 0) {
+            const confirmed = confirm(
+                '⚠️ ATENCIÓN: Escribiste un keyword pero NO hiciste click en "Add".\n\n' +
+                'Si continúas SIN agregar filtros, se importarán TODAS las actividades del Excel.\n\n' +
+                '¿Quieres continuar sin filtros y ver TODAS las actividades?'
+            );
+            if (!confirmed) {
+                return; // User wants to go back and add the keyword
+            }
+        }
+
+        // Convert excel data to activities
+        const activities = excelData.map((row, idx) => {
+            const activity = {
+                _originalIndex: idx,
+                area: 'A' // Default area
+            };
+
+            Object.keys(columnMapping).forEach(fieldKey => {
+                const colIndex = columnMapping[fieldKey];
+                let value = row[colIndex];
+
+                // Skip empty/undefined values
+                if (value === '' || value === null || value === undefined) {
+                    return;
+                }
+
+                // Convert dates (start, finish, actual_start, actual_finish)
+                if (['start', 'finish', 'actual_start', 'actual_finish'].includes(fieldKey)) {
+                    value = excelDateToString(value);
+                    // If conversion failed, skip this field
+                    if (!value) return;
+                }
+
+                // Set value
+                activity[fieldKey] = value;
+            });
+
+            // 🆕 AUTO-PARSE ACTIVITY ID to extract Area, Floor, Zone
+            if (activity.id) {
+                const parsed = parseActivityID(activity.id);
+
+                // Apply parsed values (parsed area always overrides default)
+                if (parsed.area) {
+                    activity.area = parsed.area;
+                }
+                if (parsed.floor) {
+                    activity.floor = parsed.floor; // Decoded (e.g., "Lower Level")
+                    activity.rawFloor = parsed.rawFloor; // Raw (e.g., "LL")
+                }
+                if (parsed.zone) {
+                    activity.zone = parsed.zone; // Decoded (e.g., "Interior")
+                    activity.rawZone = parsed.rawZone; // Raw (e.g., "INT")
+                }
+                if (parsed.number) {
+                    activity.activityNumber = parsed.number; // Activity number
+                }
+            }
+
+            return activity;
+        }).filter(activity => {
+            // Only require ID and Name - dates are optional
+            return activity.id && activity.name;
+        });
+
+        // Apply keyword filters
+        let filtered = activities;
+        if (filterConfig.keywords.length > 0) {
+            console.log('🔍 Filtering with config:', {
+                field: filterConfig.field,
+                keywords: filterConfig.keywords,
+                totalActivities: activities.length
+            });
+
+            filtered = activities.filter(activity => {
+                const fieldValue = String(activity[filterConfig.field] || '').toLowerCase();
+                const matches = filterConfig.keywords.some(keyword =>
+                    fieldValue.includes(keyword.toLowerCase())
+                );
+
+                // Debug first 3 activities
+                if (activities.indexOf(activity) < 3) {
+                    console.log(`Activity ${activity.id}:`, {
+                        fieldValue,
+                        matches
+                    });
+                }
+
+                return matches;
+            });
+
+            console.log(`✅ Filtered: ${filtered.length} of ${activities.length} activities match`);
+        }
+
+        setPreviewData(filtered);
+        setStep(4);
+    };
+
+    const handleConfirmImport = () => {
+        // Save filters used for this import
+        if (filterConfig.keywords.length > 0 && onSaveFilters) {
+            onSaveFilters(filterConfig);
+        }
+
+        onComplete(previewData, currentUpdate.id);
+        onClose();
+    };
+
+    const handleRetry = () => {
+        setStep(3);
+    };
+
+    return (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+            <div className="modal-content glass rounded-2xl p-8">
+                {/* Step Indicator */}
+                <div className="step-indicator mb-8">
+                    <div className={`step ${step >= 1 ? 'active' : ''} ${step > 1 ? 'completed' : ''}`}>
+                        <div className="step-circle">
+                            {step > 1 ? <i className="fas fa-check"></i> : '1'}
+                        </div>
+                        <div className="text-sm font-medium">Upload</div>
+                        {step < 4 && <div className="step-line"></div>}
+                    </div>
+                    <div className={`step ${step >= 2 ? 'active' : ''} ${step > 2 ? 'completed' : ''}`}>
+                        <div className="step-circle">
+                            {step > 2 ? <i className="fas fa-check"></i> : '2'}
+                        </div>
+                        <div className="text-sm font-medium">Map Columns</div>
+                        {step < 4 && <div className="step-line"></div>}
+                    </div>
+                    <div className={`step ${step >= 3 ? 'active' : ''} ${step > 3 ? 'completed' : ''}`}>
+                        <div className="step-circle">
+                            {step > 3 ? <i className="fas fa-check"></i> : '3'}
+                        </div>
+                        <div className="text-sm font-medium">Filter</div>
+                        {step < 4 && <div className="step-line"></div>}
+                    </div>
+                    <div className={`step ${step >= 4 ? 'active' : ''}`}>
+                        <div className="step-circle">4</div>
+                        <div className="text-sm font-medium">Preview</div>
+                    </div>
+                </div>
+
+                {/* Step 1: Upload */}
+                {step === 1 && (
+                    <div className="fade-in">
+                        <h2 className="text-2xl font-bold mb-6">
+                            <i className="fas fa-upload mr-3 text-slate-600"></i>
+                            Import Excel File
+                        </h2>
+                        <div
+                            className="border-4 border-dashed border-gray-300 rounded-xl p-12 text-center cursor-pointer hover:border-slate-500 transition"
+                            onClick={() => fileInputRef.current?.click()}
+                        >
+                            <i className="fas fa-file-excel text-6xl text-green-600 mb-4"></i>
+                            <p className="text-lg font-semibold mb-2">Click to select Excel file</p>
+                            <p className="text-sm text-gray-500">Supports .xlsx, .xls</p>
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".xlsx,.xls"
+                                onChange={handleFileUpload}
+                                className="hidden"
+                            />
+                        </div>
+                        <div className="flex justify-end mt-6">
+                            <button onClick={onClose} className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 2: Column Mapping */}
+                {step === 2 && (
+                    <div className="fade-in">
+                        <h2 className="text-2xl font-bold mb-6">
+                            <i className="fas fa-columns mr-3 text-slate-600"></i>
+                            Map Columns
+                        </h2>
+                        <p className="text-gray-600 mb-6">
+                            Map your Excel columns to system fields
+                        </p>
+                        <div className="space-y-4 max-h-96 overflow-y-auto">
+                            {FIELD_DEFINITIONS.map(field => (
+                                <div key={field.key} className="flex items-center gap-4">
+                                    <div className="w-48 font-semibold text-gray-700">
+                                        {field.label}
+                                        {field.required && <span className="text-red-500 ml-1">*</span>}
+                                    </div>
+                                    <select
+                                        value={columnMapping[field.key] ?? ''}
+                                        onChange={(e) => setColumnMapping({
+                                            ...columnMapping,
+                                            [field.key]: e.target.value !== '' ? parseInt(e.target.value) : undefined
+                                        })}
+                                        className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                                    >
+                                        <option value="">-- Select column --</option>
+                                        {headers.map((header, idx) => (
+                                            <option key={idx} value={idx}>{header}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="flex justify-between mt-6">
+                            <button onClick={() => setStep(1)} className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition">
+                                <i className="fas fa-arrow-left mr-2"></i>
+                                Back
+                            </button>
+                            <button onClick={handleMappingComplete} className="px-6 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition">
+                                Continue
+                                <i className="fas fa-arrow-right ml-2"></i>
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 3: Filter Configuration - PARTE 1 */}
+                {step === 3 && (
+                    <div className="fade-in">
+                        <h2 className="text-2xl font-bold mb-4">
+                            <i className="fas fa-filter mr-3 text-slate-600"></i>
+                            Configure Filters
+                        </h2>
+
+                        {/* Saved Filters Indicator */}
+                        {savedFilters && savedFilters.keywords.length > 0 && (
+                            <div className="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4 mb-4">
+                                <div className="flex items-start">
+                                    <i className="fas fa-magic text-blue-600 text-xl mr-3 mt-1"></i>
+                                    <div className="flex-1">
+                                        <h4 className="font-bold text-gray-800 mb-1">
+                                            🎯 Filters Auto-Loaded from {currentUpdate.name}
+                                        </h4>
+                                        <p className="text-sm text-gray-700 mb-2">
+                                            We've automatically loaded the filters you used last time to save you time!
+                                        </p>
+                                        <div className="flex flex-wrap gap-2">
+                                            <span className="text-xs text-gray-600">Field:</span>
+                                            <span className="px-2 py-0.5 bg-blue-200 text-blue-800 rounded text-xs font-medium">
+                                                {FIELD_DEFINITIONS.find(f => f.key === savedFilters.field)?.label}
+                                            </span>
+                                            <span className="text-xs text-gray-600 ml-2">Keywords:</span>
+                                            {savedFilters.keywords.map((kw, idx) => (
+                                                <span key={idx} className="px-2 py-0.5 bg-blue-200 text-blue-800 rounded text-xs font-medium">
+                                                    {kw}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <p className="text-gray-600 mb-6">
+                            Filter activities by keywords (optional - leave empty to import all)
+                        </p>
+
+                        <div className="mb-6">
+                            <label className="block font-semibold mb-2">Field to filter:</label>
+                            <select
+                                value={filterConfig.field}
+                                onChange={(e) => setFilterConfig({ ...filterConfig, field: e.target.value })}
+                                className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                            >
+                                {FIELD_DEFINITIONS.filter(f => columnMapping[f.key] !== undefined).map(field => (
+                                    <option key={field.key} value={field.key}>{field.label}</option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div className="mb-6">
+                            <label className="block font-semibold mb-2">Keywords:</label>
+
+                            {/* Single Keyword Input */}
+                            <div className="flex gap-2 mb-3">
+                                <input
+                                    type="text"
+                                    value={keywordInput}
+                                    onChange={(e) => setKeywordInput(e.target.value)}
+                                    onKeyPress={(e) => e.key === 'Enter' && addKeyword()}
+                                    placeholder="Type a keyword..."
+                                    className="flex-1 px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-slate-500 focus:outline-none"
+                                />
+                                <button
+                                    onClick={addKeyword}
+                                    className="px-6 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition"
+                                >
+                                    <i className="fas fa-plus mr-2"></i>
+                                    Add
+                                </button>
+                            </div>
+
+                            {/* Bulk Keyword Input */}
+                            <div className="mb-3">
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    <i className="fas fa-layer-group mr-2 text-blue-600"></i>
+                                    Or paste multiple keywords (separated by COMMA):
+                                </label>
+                                <textarea
+                                    value={bulkKeywordInput}
+                                    onChange={(e) => setBulkKeywordInput(e.target.value)}
+                                    placeholder="Example: DROP CEILING TILE, INSTALL CEILING GRID, FRAME HARD CEILINGS, PRIME/FIRST COAT PAINT"
+                                    rows="4"
+                                    className="w-full px-4 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none font-mono text-sm"
+                                />
+                                <button
+                                    onClick={handleBulkAdd}
+                                    className="mt-2 px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition"
+                                >
+                                    <i className="fas fa-layer-group mr-2"></i>
+                                    Add All Keywords
+                                </button>
+                            </div>
+
+                            {filterConfig.keywords.length > 0 && (
+                                <div>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-sm text-gray-600 font-medium">
+                                            {filterConfig.keywords.length} keyword(s) added
+                                        </span>
+                                        <button
+                                            onClick={() => setFilterConfig({ ...filterConfig, keywords: [] })}
+                                            className="text-xs px-3 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded transition"
+                                        >
+                                            <i className="fas fa-trash mr-1"></i>
+                                            Clear All
+                                        </button>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {filterConfig.keywords.map((keyword, idx) => (
+                                            <div key={idx} className="keyword-badge">
+                                                {keyword}
+                                                <button onClick={() => removeKeyword(keyword)}>
+                                                    <i className="fas fa-times"></i>
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                            <i className="fas fa-info-circle text-blue-600 mr-2"></i>
+                            <span className="text-sm text-blue-800">
+                                Activities containing <strong>any</strong> of these keywords in "{FIELD_DEFINITIONS.find(f => f.key === filterConfig.field)?.label}" will be imported.
+                                {filterConfig.keywords.length === 0 && " No filters will import ALL activities."}
+                            </span>
+                        </div>
+
+                        <div className="flex justify-between">
+                            <button onClick={() => setStep(2)} className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition">
+                                <i className="fas fa-arrow-left mr-2"></i>
+                                Back
+                            </button>
+                            <button onClick={applyFiltersAndPreview} className="px-6 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition">
+                                Preview
+                                <i className="fas fa-arrow-right ml-2"></i>
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 4: Preview */}
+                {step === 4 && (
+                    <div className="fade-in">
+                        <h2 className="text-2xl font-bold mb-6">
+                            <i className="fas fa-eye mr-3 text-slate-600"></i>
+                            Import Preview
+                        </h2>
+
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <i className="fas fa-check-circle text-green-600 mr-2"></i>
+                                    <span className="font-semibold text-green-800">
+                                        {previewData.length} activities will be imported
+                                    </span>
+                                </div>
+                                {filterConfig.keywords.length > 0 && (
+                                    <div className="text-sm text-green-700">
+                                        Filtered by: {filterConfig.keywords.join(', ')}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="max-h-96 overflow-auto border-2 border-gray-200 rounded-lg">
+                            <table className="w-full">
+                                <thead className="bg-gray-100 sticky top-0">
+                                    <tr>
+                                        <th className="px-4 py-2 text-left text-sm font-semibold">#</th>
+                                        <th className="px-4 py-2 text-left text-sm font-semibold">ID</th>
+                                        <th className="px-4 py-2 text-left text-sm font-semibold">Name</th>
+                                        <th className="px-4 py-2 text-left text-sm font-semibold">Start</th>
+                                        <th className="px-4 py-2 text-left text-sm font-semibold">Finish</th>
+                                        <th className="px-4 py-2 text-left text-sm font-semibold">Duration</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {previewData.slice(0, 50).map((activity, idx) => (
+                                        <tr key={idx} className="border-t hover:bg-gray-50">
+                                            <td className="px-4 py-2 text-sm">{idx + 1}</td>
+                                            <td className="px-4 py-2 text-sm font-mono">{activity.id}</td>
+                                            <td className="px-4 py-2 text-sm">{activity.name}</td>
+                                            <td className="px-4 py-2 text-sm">{activity.start}</td>
+                                            <td className="px-4 py-2 text-sm">{activity.finish}</td>
+                                            <td className="px-4 py-2 text-sm">{activity.rem_duration || activity.original_duration}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            {previewData.length > 50 && (
+                                <div className="bg-gray-100 p-3 text-center text-sm text-gray-600">
+                                    Showing 50 of {previewData.length} activities...
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="flex justify-between mt-6">
+                            <button onClick={handleRetry} className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition">
+                                <i className="fas fa-redo mr-2"></i>
+                                Retry Filters
+                            </button>
+                            <button onClick={handleConfirmImport} className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition font-semibold">
+                                <i className="fas fa-check mr-2"></i>
+                                Confirm & Import
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ========== MAIN APP ==========
+/**
+ * Crown HS Schedule Calendar - Main Application
+ *
+ * Main orchestrator component that coordinates all UI components,
+ * state management, and data persistence.
+ *
+ * Features:
+ * - Multi-update management with LocalStorage persistence
+ * - Excel import/export with advanced filtering
+ * - Interactive calendar with activity visualization
+ * - Bulk operations (contractor assignment, filtering)
+ * - Customizable area/floor/zone codes
+ * - Activity editing with date validation
+ */
+
+
+// Import all components
+
+// Import utilities
+
+// TODAY constant
+const TODAY = new Date();
+TODAY.setHours(0, 0, 0, 0);
+
+/**
+ * Main Calendar Component
+ *
+ * Manages the entire application state including:
+ * - Multiple updates with activities
+ * - Filters (area, floor, zone, work type)
+ * - Modal visibility states
+ * - LocalStorage persistence
+ * - Custom configurations
+ */
+function CalendarScheduleViewer() {
+    // State: Updates management
+    const [updates, setUpdates] = useState([
+        {
+            id: 12,
+            name: 'Update 12',
+            activities: [],
+            loaded: false,
+            savedFilters: null // { field: 'name', keywords: ['piso', 'madera', 'pared'] }
+        }
+    ]);
+    const [currentUpdateId, setCurrentUpdateId] = useState(12);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+
+    // State: Calendar navigation
+    const [currentMonth, setCurrentMonth] = useState(new Date());
+    const [selectedDate, setSelectedDate] = useState(TODAY);
+
+    // State: Filters
+    const [filters, setFilters] = useState({
+        area: 'all',
+        floor: '',
+        zone: '',
+        workType: 'all'
+    });
+
+    // State: Modal visibility
+    const [showImportWizard, setShowImportWizard] = useState(false);
+    const [showManualEntry, setShowManualEntry] = useState(false);
+    const [showRenameModal, setShowRenameModal] = useState(false);
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [showExportModal, setShowExportModal] = useState(false);
+    const [showBulkContractorModal, setShowBulkContractorModal] = useState(false);
+    const [showConfigureCodesModal, setShowConfigureCodesModal] = useState(false);
+    const [showSettingsModal, setShowSettingsModal] = useState(false);
+    const [editingActivity, setEditingActivity] = useState(null);
+    const [toast, setToast] = useState(null);
+
+    // State: Project configuration (persisted in LocalStorage)
+    const [projectName, setProjectName] = useState(() => {
+        const saved = localStorage.getItem('projectName');
+        return saved || 'Crown HS Schedule Calendar';
+    });
+
+    // State: Code configuration (can be customized by user)
+    const [customAreaConfig, setCustomAreaConfig] = useState(() => {
+        const saved = localStorage.getItem('customAreaConfig');
+        return saved ? JSON.parse(saved) : areaConfig;
+    });
+    const [customIdPatternConfig, setCustomIdPatternConfig] = useState(() => {
+        const saved = localStorage.getItem('customIdPatternConfig');
+        return saved ? JSON.parse(saved) : ID_PATTERN_CONFIG;
+    });
+
+    // Current update helper
+    const currentUpdate = updates.find(u => u.id === currentUpdateId);
+
+    /**
+     * Show toast notification
+     */
+    const showToast = (message, type = 'success') => {
+        setToast({ message, type });
+    };
+
+    /**
+     * Effect: Load data from LocalStorage on mount
+     * Falls back to JSON file for backward compatibility
+     */
+    useEffect(() => {
+        console.log('🔍 Loading data from LocalStorage...');
+        setLoading(true);
+
+        try {
+            const savedData = localStorage.getItem('crownScheduleData');
+
+            if (savedData) {
+                const parsed = JSON.parse(savedData);
+                console.log('✅ Loaded from LocalStorage:', parsed.updates.length, 'updates');
+
+                // 🧹 CLEANUP: Trim whitespace from area, floor, zone fields
+                const cleanedUpdates = parsed.updates.map(update => ({
+                    ...update,
+                    activities: update.activities.map(activity => ({
+                        ...activity,
+                        area: activity.area ? activity.area.trim() : activity.area,
+                        floor: activity.floor ? activity.floor.trim() : activity.floor,
+                        zone: activity.zone ? activity.zone.trim() : activity.zone,
+                        id: activity.id ? activity.id.trim() : activity.id
+                    }))
+                }));
+
+                setUpdates(cleanedUpdates);
+                setCurrentUpdateId(parsed.currentUpdateId);
+                setLoading(false);
+                return;
+            }
+        } catch (error) {
+            console.error('❌ Error loading from LocalStorage:', error);
+        }
+
+        // Fallback: Try to load Update 12 from JSON (backward compatibility)
+        fetch('/crown-hs-schedule-update12.json')
+            .then(res => {
+                if (!res.ok) throw new Error('File not found');
+                return res.json();
+            })
+            .then(data => {
+                console.log('✅ Data loaded from JSON:', data.total_activities, 'activities');
+                setUpdates(prev => prev.map(u =>
+                    u.id === 12 ? { ...u, activities: data.activities, loaded: true } : u
+                ));
+                setLoading(false);
+            })
+            .catch(err => {
+                console.log('ℹ️ No existing data, starting fresh');
+                setLoading(false);
+            });
+    }, []);
+
+    /**
+     * Effect: Save data to LocalStorage whenever updates change
+     */
+    useEffect(() => {
+        if (!loading && updates.length > 0) {
+            try {
+                const dataToSave = {
+                    updates,
+                    currentUpdateId,
+                    lastSaved: new Date().toISOString()
+                };
+                localStorage.setItem('crownScheduleData', JSON.stringify(dataToSave));
+                console.log('💾 Data saved to LocalStorage');
+            } catch (error) {
+                console.error('❌ Error saving to LocalStorage:', error);
+                showToast('Error saving data', 'error');
+            }
+        }
+    }, [updates, currentUpdateId, loading]);
+
+    /**
+     * Handler: Create new update
+     */
+    const handleCreateNewUpdate = () => {
+        const maxId = Math.max(...updates.map(u => u.id));
+        // Copy savedFilters from current update to new update
+        const currentFilters = currentUpdate?.savedFilters || null;
+        const newUpdate = {
+            id: maxId + 1,
+            name: `Update ${maxId + 1}`,
+            activities: [],
+            loaded: false,
+            savedFilters: currentFilters // Inherit filters from current update
+        };
+        setUpdates([...updates, newUpdate]);
+        setCurrentUpdateId(newUpdate.id);
+
+        const filterMsg = currentFilters ? ' (filters copied)' : '';
+        showToast(`Created ${newUpdate.name}${filterMsg}`, 'success');
+    };
+
+    /**
+     * Handler: Rename update
+     */
+    const handleRenameUpdate = (updateId, newName) => {
+        setUpdates(prev => prev.map(u =>
+            u.id === updateId ? { ...u, name: newName } : u
+        ));
+        showToast('Update renamed successfully', 'success');
+    };
+
+    /**
+     * Handler: Delete update
+     */
+    const handleDeleteUpdate = () => {
+        if (updates.length === 1) {
+            showToast('Cannot delete the only update', 'error');
+            return;
+        }
+
+        const updateToDelete = currentUpdate;
+        const remainingUpdates = updates.filter(u => u.id !== currentUpdateId);
+        setUpdates(remainingUpdates);
+        setCurrentUpdateId(remainingUpdates[0].id);
+        setShowDeleteModal(false);
+        showToast(`Deleted ${updateToDelete.name}`, 'success');
+    };
+
+    /**
+     * Handler: Import complete (from Excel or Manual Entry)
+     */
+    const handleImportComplete = (activities, updateId) => {
+        setUpdates(prev => prev.map(u =>
+            u.id === updateId ? { ...u, activities: [...u.activities, ...activities], loaded: true } : u
+        ));
+        showToast(`Imported ${activities.length} activities`, 'success');
+    };
+
+    /**
+     * Handler: Edit activity
+     */
+    const handleEditActivity = (editedActivity) => {
+        setUpdates(prev => prev.map(u => {
+            if (u.id === currentUpdateId) {
+                // Find and replace the activity
+                const updatedActivities = u.activities.map(act =>
+                    act.id === editedActivity.id && act.name === editedActivity.name
+                        ? editedActivity
+                        : act
+                );
+                return { ...u, activities: updatedActivities };
+            }
+            return u;
+        }));
+        setEditingActivity(null);
+        showToast('Activity updated successfully', 'success');
+    };
+
+    /**
+     * Memo: Build activity map by date
+     * Maps each date to all activities occurring on that date
+     */
+    const activityMap = useMemo(() => {
+        if (!currentUpdate || currentUpdate.activities.length === 0) return {};
+
+        const map = {};
+        currentUpdate.activities.forEach(activity => {
+            const startDate = formatDate(activity.start);
+            const finishDate = formatDate(activity.finish);
+
+            if (!startDate || !finishDate) return;
+
+            const currentDate = new Date(startDate);
+            while (currentDate <= finishDate) {
+                const dateKey = dateToString(currentDate);
+                if (!map[dateKey]) map[dateKey] = [];
+                map[dateKey].push(activity);
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
+        });
+
+        return map;
+    }, [currentUpdate]);
+
+    /**
+     * Memo: Filter activities based on current filter settings
+     */
+    const filteredActivities = useMemo(() => {
+        if (!currentUpdate) return [];
+
+        return currentUpdate.activities.filter(activity => {
+            if (filters.area !== 'all' && activity.area !== filters.area) return false;
+            if (filters.floor && activity.floor !== filters.floor) return false;
+            if (filters.zone && activity.zone !== filters.zone) return false;
+            if (filters.workType !== 'all' && activity.name !== filters.workType) return false;
+            return true;
+        });
+    }, [currentUpdate, filters]);
+
+    /**
+     * Memo: Get activities without dates (missing start or finish)
+     */
+    const activitiesWithoutDates = useMemo(() => {
+        if (!currentUpdate) return [];
+
+        return filteredActivities.filter(activity => {
+            return !activity.start || !activity.finish;
+        });
+    }, [filteredActivities]);
+
+    /**
+     * Memo: Get unique work types
+     */
+    const workTypes = useMemo(() => {
+        if (!currentUpdate) return [];
+        const types = new Set(currentUpdate.activities.map(a => a.name));
+        return Array.from(types).sort();
+    }, [currentUpdate]);
+
+    /**
+     * Memo: Get activities for selected date
+     */
+    const selectedDateActivities = useMemo(() => {
+        const dateKey = dateToString(selectedDate);
+        const activities = activityMap[dateKey] || [];
+
+        return activities.filter(activity => {
+            if (filters.area !== 'all' && activity.area !== filters.area) return false;
+            if (filters.floor && activity.floor !== filters.floor) return false;
+            if (filters.zone && activity.zone !== filters.zone) return false;
+            if (filters.workType !== 'all' && activity.name !== filters.workType) return false;
+            return true;
+        });
+    }, [activityMap, selectedDate, filters]);
+
+    /**
+     * Memo: Generate calendar days for current month
+     */
+    const calendarDays = useMemo(() => {
+        const year = currentMonth.getFullYear();
+        const month = currentMonth.getMonth();
+
+        const firstDay = new Date(year, month, 1);
+        const lastDay = new Date(year, month + 1, 0);
+
+        const days = [];
+        const startDay = firstDay.getDay();
+
+        for (let i = 0; i < startDay; i++) {
+            days.push(null);
+        }
+
+        for (let day = 1; day <= lastDay.getDate(); day++) {
+            days.push(new Date(year, month, day));
+        }
+
+        return days;
+    }, [currentMonth]);
+
+    /**
+     * Handler: Navigate month (prev/next)
+     */
+    const navigateMonth = (direction) => {
+        const newMonth = new Date(currentMonth);
+        newMonth.setMonth(newMonth.getMonth() + direction);
+        setCurrentMonth(newMonth);
+    };
+
+    /**
+     * Handler: Export data as JSON backup
+     */
+    const handleExportData = () => {
+        try {
+            const dataToExport = {
+                updates,
+                currentUpdateId,
+                exportDate: new Date().toISOString(),
+                version: '1.0'
+            };
+
+            const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `crown-schedule-backup-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            showToast('Data exported successfully', 'success');
+        } catch (error) {
+            showToast('Error exporting data', 'error');
+        }
+    };
+
+    /**
+     * Handler: Export to Excel with filters and sorting
+     */
+    const handleExportToExcel = (filters, sortBy, sortOrder) => {
+        try {
+            let activities = [...currentUpdate.activities];
+
+            if (activities.length === 0) {
+                showToast('No activities to export', 'error');
+                return;
+            }
+
+            // STEP 1: Apply Filters
+            if (filters.contractor) {
+                activities = activities.filter(a => a.contractor === filters.contractor);
+            }
+            if (filters.area) {
+                activities = activities.filter(a => a.area === filters.area);
+            }
+            if (filters.floor) {
+                activities = activities.filter(a => a.floor === filters.floor);
+            }
+            if (filters.zone) {
+                activities = activities.filter(a => a.zone === filters.zone);
+            }
+            if (filters.activityName) {
+                activities = activities.filter(a =>
+                    a.name && a.name.toLowerCase().includes(filters.activityName.toLowerCase())
+                );
+            }
+
+            if (activities.length === 0) {
+                showToast('No activities match the filters', 'error');
+                return;
+            }
+
+            // STEP 2: Sort Activities
+            activities.sort((a, b) => {
+                let aVal = a[sortBy] || '';
+                let bVal = b[sortBy] || '';
+
+                // For date fields, compare as dates (format: YYYY-MM-DD)
+                const dateFields = ['start', 'finish', 'actual_start', 'actual_finish'];
+                if (dateFields.includes(sortBy)) {
+                    // Handle empty dates (push to end)
+                    if (!aVal && !bVal) return 0;
+                    if (!aVal) return 1;  // Empty dates go to end
+                    if (!bVal) return -1;
+
+                    // Compare dates as YYYY-MM-DD strings (works correctly)
+                    if (sortOrder === 'asc') {
+                        return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+                    } else {
+                        return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
+                    }
+                }
+
+                // For non-date fields, compare as strings
+                aVal = String(aVal).toLowerCase();
+                bVal = String(bVal).toLowerCase();
+
+                if (sortOrder === 'asc') {
+                    return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+                } else {
+                    return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
+                }
+            });
+
+            // Prepare data for Excel with all fields
+            const excelData = activities.map(activity => ({
+                'ID': activity.id || '',
+                'Activity Name': activity.name || '',
+                'Contractor': activity.contractor || '',
+                'Area': customAreaConfig[activity.area]?.name || activity.area || '',
+                'Floor': customIdPatternConfig.floors[activity.floor] || activity.floor || '',
+                'Zone': customIdPatternConfig.zones[activity.zone] || activity.zone || '',
+                'Start Date': activity.start || '',
+                'Finish Date': activity.finish || '',
+                'Original Duration': activity.original_duration || '',
+                'Remaining Duration': activity.rem_duration || '',
+                'Actual Start': activity.actual_start || '',
+                'Actual Finish': activity.actual_finish || '',
+                'Percent Complete': activity.percent_complete || '0',
+                'Comments': activity.comments || ''
+            }));
+
+            // Create worksheet
+            const ws = XLSX.utils.json_to_sheet(excelData);
+
+            // Set column widths for 11x17 landscape (optimal widths)
+            ws['!cols'] = [
+                { wch: 15 },  // ID
+                { wch: 35 },  // Activity Name
+                { wch: 15 },  // Contractor
+                { wch: 10 },  // Area
+                { wch: 15 },  // Floor
+                { wch: 15 },  // Zone
+                { wch: 12 },  // Start Date
+                { wch: 12 },  // Finish Date
+                { wch: 12 },  // Original Duration
+                { wch: 12 },  // Remaining Duration
+                { wch: 12 },  // Actual Start
+                { wch: 12 },  // Actual Finish
+                { wch: 12 },  // Percent Complete
+                { wch: 25 }   // Comments
+            ];
+
+            // Create workbook
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, currentUpdate.name);
+
+            // Generate filename with date
+            const today = new Date().toISOString().split('T')[0];
+            const filename = `${currentUpdate.name}_Export_${today}.xlsx`;
+
+            // Download
+            XLSX.writeFile(wb, filename);
+
+            showToast(`Exported ${activities.length} activities to Excel!`, 'success');
+        } catch (error) {
+            console.error('Excel export failed:', error);
+            showToast('Excel export failed: ' + error.message, 'error');
+        }
+    };
+
+    /**
+     * Handler: Bulk contractor assignment
+     */
+    const handleBulkContractorAssignment = (selectedActivities, contractorName) => {
+        try {
+            // Update the contractor field for all selected activities
+            const updatedActivities = currentUpdate.activities.map(activity => {
+                const isSelected = selectedActivities.some(selected => selected.id === activity.id);
+                if (isSelected) {
+                    return { ...activity, contractor: contractorName };
+                }
+                return activity;
+            });
+
+            // Update the current update with new activities
+            setUpdates(prev => prev.map(u =>
+                u.id === currentUpdateId
+                    ? { ...u, activities: updatedActivities }
+                    : u
+            ));
+
+            showToast(`Successfully assigned "${contractorName}" to ${selectedActivities.length} ${selectedActivities.length === 1 ? 'activity' : 'activities'}!`, 'success');
+        } catch (error) {
+            console.error('Bulk contractor assignment failed:', error);
+            showToast('Bulk assignment failed: ' + error.message, 'error');
+        }
+    };
+
+    /**
+     * Handler: Save code configuration
+     */
+    const handleSaveCodeConfiguration = (config) => {
+        setCustomAreaConfig(config.areas);
+        setCustomIdPatternConfig(config.idPatternConfig);
+
+        // Save to LocalStorage for persistence
+        localStorage.setItem('customAreaConfig', JSON.stringify(config.areas));
+        localStorage.setItem('customIdPatternConfig', JSON.stringify(config.idPatternConfig));
+
+        showToast('Code configuration saved successfully!', 'success');
+    };
+
+    /**
+     * Handler: Save project name
+     */
+    const handleSaveProjectName = (newName) => {
+        setProjectName(newName);
+        localStorage.setItem('projectName', newName);
+        showToast('Project name updated successfully!', 'success');
+    };
+
+    /**
+     * Handler: Import data from JSON backup
+     */
+    const handleImportData = (event) => {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            try {
+                const imported = JSON.parse(e.target.result);
+                setUpdates(imported.updates);
+                setCurrentUpdateId(imported.currentUpdateId);
+                showToast(`Imported ${imported.updates.length} updates`, 'success');
+            } catch (error) {
+                showToast('Error importing data - invalid file', 'error');
+            }
+        };
+        reader.readAsText(file);
+        event.target.value = '';
+    };
+
+    /**
+     * Handler: Clear all data
+     */
+    const handleClearAllData = () => {
+        if (confirm('⚠️ WARNING: This will delete ALL data permanently. Are you sure?')) {
+            localStorage.removeItem('crownScheduleData');
+            setUpdates([{ id: 1, name: 'Update 1', activities: [], loaded: false }]);
+            setCurrentUpdateId(1);
+            showToast('All data cleared', 'success');
+        }
+    };
+
+    // Loading screen
+    if (loading) {
+        return (
+            <div className="min-h-screen flex items-center justify-center">
+                <div className="text-white text-2xl">
+                    <i className="fas fa-spinner fa-spin mr-3"></i>
+                    Loading calendar...
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="container mx-auto px-4 py-8">
+            {/* Header */}
+            <div className="glass rounded-2xl p-6 mb-6 shadow-xl">
+                <div className="flex justify-between items-center">
+                    <div>
+                        <div className="flex items-center gap-3 mb-2">
+                            <h1 className="text-3xl font-bold text-gray-900">
+                                <i className="fas fa-calendar-alt mr-3 text-slate-600"></i>
+                                {projectName}
+                            </h1>
+                            <button
+                                onClick={() => setShowSettingsModal(true)}
+                                className="px-3 py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition text-sm"
+                                title="Settings"
+                            >
+                                <i className="fas fa-cog"></i>
+                            </button>
+                        </div>
+                        <p className="text-gray-600">
+                            {currentUpdate?.name} | {currentUpdate?.activities.length || 0} Activities
+                        </p>
+                    </div>
+                    <div className="flex gap-4 items-center">
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => setShowBulkContractorModal(true)}
+                                className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition text-sm font-semibold"
+                                title="Assign contractor to multiple activities at once"
+                            >
+                                <i className="fas fa-users-cog mr-2"></i>
+                                Assign Contractor
+                            </button>
+                            <button
+                                onClick={() => setShowConfigureCodesModal(true)}
+                                className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition text-sm font-semibold"
+                                title="Configure what each Activity ID code means in your project"
+                            >
+                                <i className="fas fa-cog mr-2"></i>
+                                Configure Codes
+                            </button>
+                            <button
+                                onClick={() => setShowExportModal(true)}
+                                className="px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition text-sm font-semibold"
+                                title="Export current update to Excel with filters and sorting"
+                            >
+                                <i className="fas fa-file-excel mr-2"></i>
+                                Export to Excel
+                            </button>
+                            <button
+                                onClick={handleClearAllData}
+                                className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition text-sm"
+                                title="Clear all data"
+                            >
+                                <i className="fas fa-trash-alt"></i>
+                            </button>
+                        </div>
+                        <div className="text-center border-l border-gray-300 pl-4">
+                            <div className="text-sm text-gray-500">TODAY</div>
+                            <div className="text-2xl font-bold text-amber-600">{TODAY.getDate()}</div>
+                            <div className="text-xs text-gray-500">{TODAY.toLocaleDateString('en-US', { month: 'short' })}</div>
+                        </div>
+                        <div className="text-center px-4 border-l border-gray-300">
+                            <div className="text-sm text-gray-500">Total</div>
+                            <div className="text-2xl font-bold text-slate-600">{filteredActivities.length}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Update Management Bar */}
+            <div className="glass rounded-2xl p-6 mb-6 shadow-xl">
+                <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2">
+                        <i className="fas fa-sync-alt text-slate-600"></i>
+                        <span className="font-semibold text-gray-700">Update:</span>
+                    </div>
+
+                    <select
+                        value={currentUpdateId}
+                        onChange={(e) => setCurrentUpdateId(parseInt(e.target.value))}
+                        className="px-4 py-2 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none font-medium"
+                    >
+                        {updates.map(update => (
+                            <option key={update.id} value={update.id}>
+                                {update.name} ({update.activities.length} activities)
+                            </option>
+                        ))}
+                    </select>
+
+                    <button
+                        onClick={() => setShowRenameModal(true)}
+                        className="px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition"
+                        title="Rename current update"
+                    >
+                        <i className="fas fa-edit"></i>
+                    </button>
+
+                    <button
+                        onClick={() => setShowDeleteModal(true)}
+                        className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition"
+                        title="Delete current update"
+                    >
+                        <i className="fas fa-trash"></i>
+                    </button>
+
+                    <button
+                        onClick={handleCreateNewUpdate}
+                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition font-medium"
+                    >
+                        <i className="fas fa-plus mr-2"></i>
+                        New Update
+                    </button>
+
+                    <div className="ml-auto flex gap-3">
+                        <button
+                            onClick={() => setShowImportWizard(true)}
+                            className="px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition font-medium"
+                        >
+                            <i className="fas fa-file-import mr-2"></i>
+                            Import Excel
+                        </button>
+
+                        <button
+                            onClick={() => setShowManualEntry(true)}
+                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium"
+                        >
+                            <i className="fas fa-plus-circle mr-2"></i>
+                            Manual Entry
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {/* Filters */}
+            <div className="glass rounded-2xl p-6 mb-6 shadow-xl">
+                <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-2">
+                        <i className="fas fa-filter text-slate-600"></i>
+                        <span className="font-semibold text-gray-700">Filters:</span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <label className="text-sm text-gray-600">Area:</label>
+                        <select
+                            value={filters.area}
+                            onChange={(e) => setFilters({...filters, area: e.target.value})}
+                            className="px-3 py-1.5 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none text-sm"
+                        >
+                            <option value="all">All</option>
+                            {Object.keys(areaConfig).map(area => (
+                                <option key={area} value={area}>{area}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <label className="text-sm text-gray-600">Floor:</label>
+                        <select
+                            value={filters.floor || 'all'}
+                            onChange={(e) => setFilters({...filters, floor: e.target.value === 'all' ? '' : e.target.value})}
+                            className="px-3 py-1.5 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none text-sm"
+                        >
+                            <option value="all">All</option>
+                            {[...new Set(currentUpdate?.activities.map(a => a.floor).filter(Boolean))].sort().map(floor => (
+                                <option key={floor} value={floor}>{floor}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <label className="text-sm text-gray-600">Zone:</label>
+                        <select
+                            value={filters.zone || 'all'}
+                            onChange={(e) => setFilters({...filters, zone: e.target.value === 'all' ? '' : e.target.value})}
+                            className="px-3 py-1.5 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none text-sm"
+                        >
+                            <option value="all">All</option>
+                            {[...new Set(currentUpdate?.activities.map(a => a.zone).filter(Boolean))].sort().map(zone => (
+                                <option key={zone} value={zone}>{zone}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <label className="text-sm text-gray-600">Work Type:</label>
+                        <select
+                            value={filters.workType}
+                            onChange={(e) => setFilters({...filters, workType: e.target.value})}
+                            className="px-3 py-1.5 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none text-sm"
+                        >
+                            <option value="all">All</option>
+                            {workTypes.map(type => (
+                                <option key={type} value={type}>{type}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <button
+                        onClick={() => setFilters({ area: 'all', floor: '', zone: '', workType: 'all' })}
+                        className="ml-auto px-4 py-1.5 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm font-medium transition"
+                    >
+                        <i className="fas fa-times mr-2"></i>
+                        Clear
+                    </button>
+                </div>
+            </div>
+
+            {/* Calendar and Activities Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Calendar */}
+                <div className="lg:col-span-2">
+                    <div className="glass rounded-2xl p-6 shadow-xl">
+                        <div className="flex justify-between items-center mb-6">
+                            <button
+                                onClick={() => navigateMonth(-1)}
+                                className="px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition"
+                            >
+                                <i className="fas fa-chevron-left"></i>
+                            </button>
+                            <div className="flex items-center gap-4">
+                                <h2 className="text-2xl font-bold text-gray-800">
+                                    {currentMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                                </h2>
+                                {/* Only show Today button if not in current month */}
+                                {(currentMonth.getMonth() !== TODAY.getMonth() || currentMonth.getFullYear() !== TODAY.getFullYear()) && (
+                                    <button
+                                        onClick={() => {
+                                            setCurrentMonth(new Date());
+                                            setSelectedDate(TODAY);
+                                        }}
+                                        className="px-3 py-1 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition text-sm font-semibold"
+                                        title="Go to today"
+                                    >
+                                        <i className="fas fa-calendar-day mr-1"></i>
+                                        Today
+                                    </button>
+                                )}
+                            </div>
+                            <button
+                                onClick={() => navigateMonth(1)}
+                                className="px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition"
+                            >
+                                <i className="fas fa-chevron-right"></i>
+                            </button>
+                        </div>
+
+                        <div className="grid grid-cols-7 gap-2">
+                            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+                                <div key={day} className="text-center font-semibold text-gray-600 py-2">
+                                    {day}
+                                </div>
+                            ))}
+
+                            {calendarDays.map((date, idx) => {
+                                if (!date) {
+                                    return <div key={`empty-${idx}`} className="aspect-square"></div>;
+                                }
+
+                                const dateKey = dateToString(date);
+                                const allDayActivities = activityMap[dateKey] || [];
+
+                                // Apply filters to day activities (for dots)
+                                const dayActivities = allDayActivities.filter(activity => {
+                                    if (filters.area !== 'all' && activity.area !== filters.area) return false;
+                                    if (filters.floor && activity.floor !== filters.floor) return false;
+                                    if (filters.zone && activity.zone !== filters.zone) return false;
+                                    if (filters.workType !== 'all' && activity.name !== filters.workType) return false;
+                                    return true;
+                                });
+
+                                const hasActivities = dayActivities.length > 0;
+                                const isToday = date.toDateString() === TODAY.toDateString();
+                                const isSelected = date.toDateString() === selectedDate.toDateString();
+
+                                return (
+                                    <div
+                                        key={dateKey}
+                                        onClick={() => setSelectedDate(date)}
+                                        className={`
+                                            calendar-day aspect-square p-2 rounded-lg text-center
+                                            ${isToday ? 'today' : ''}
+                                            ${isSelected ? 'selected' : 'bg-white'}
+                                            ${hasActivities && !isToday && !isSelected ? 'has-activities' : ''}
+                                        `}
+                                    >
+                                        <div className="font-semibold">{date.getDate()}</div>
+                                        {hasActivities && (
+                                            <div className="mt-1">
+                                                {dayActivities.slice(0, 3).map((act, i) => (
+                                                    <div
+                                                        key={i}
+                                                        className="activity-dot"
+                                                        style={{ backgroundColor: areaConfig[act.area]?.color || '#94a3b8' }}
+                                                    ></div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Activities List */}
+                <div className="lg:col-span-1">
+                    <div className="glass rounded-2xl p-6 shadow-xl">
+                        <h3 className="text-xl font-bold text-gray-800 mb-4">
+                            <i className="fas fa-tasks mr-2 text-slate-600"></i>
+                            Activities on {selectedDate.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}
+                        </h3>
+
+                        {selectedDateActivities.length === 0 ? (
+                            <div className="text-center py-8">
+                                <i className="fas fa-calendar-times text-4xl mb-3 opacity-50 text-gray-400"></i>
+                                <p className="text-gray-500 mb-4">No activities on this day</p>
+                                <button
+                                    onClick={() => setShowManualEntry(true)}
+                                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium text-sm"
+                                >
+                                    <i className="fas fa-plus-circle mr-2"></i>
+                                    Add Activity
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="space-y-3 max-h-[600px] overflow-y-auto">
+                                {selectedDateActivities.map((activity, idx) => (
+                                    <div
+                                        key={idx}
+                                        className="activity-card p-4 bg-white rounded-lg shadow-sm border-l-4 relative"
+                                        style={{ borderColor: customAreaConfig[activity.area]?.color || '#94a3b8' }}
+                                    >
+                                        {/* Edit Button */}
+                                        <button
+                                            onClick={() => setEditingActivity(activity)}
+                                            className="absolute top-2 right-2 px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-600 rounded text-xs transition"
+                                            title="Edit activity"
+                                        >
+                                            <i className="fas fa-edit"></i>
+                                        </button>
+
+                                        <div className="font-bold text-gray-800 mb-1">{activity.id}</div>
+                                        <div className="text-sm text-gray-600 mb-2">{activity.name}</div>
+                                        <div className="flex justify-between text-xs text-gray-500">
+                                            <span>
+                                                <i className="fas fa-map-marker-alt mr-1"></i>
+                                                {customAreaConfig[activity.area]?.name || activity.area}
+                                            </span>
+                                            <span>
+                                                <i className="fas fa-clock mr-1"></i>
+                                                {activity.rem_duration || activity.original_duration}d
+                                            </span>
+                                        </div>
+                                        <div className="text-xs text-gray-500 mt-2">
+                                            {activity.start} → {activity.finish}
+                                        </div>
+
+                                        {/* Floor and Zone Display */}
+                                        {(activity.floor || activity.zone) && (
+                                            <div className="flex gap-2 mt-2">
+                                                {activity.floor && (
+                                                    <div className="text-xs text-indigo-600 bg-indigo-50 px-2 py-1 rounded">
+                                                        <i className="fas fa-layer-group mr-1"></i>
+                                                        <strong>Floor:</strong> {customIdPatternConfig.floors[activity.floor] || activity.floor}
+                                                    </div>
+                                                )}
+                                                {activity.zone && (
+                                                    <div className="text-xs text-teal-600 bg-teal-50 px-2 py-1 rounded">
+                                                        <i className="fas fa-th-large mr-1"></i>
+                                                        <strong>Zone:</strong> {customIdPatternConfig.zones[activity.zone] || activity.zone}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {activity.contractor && (
+                                            <div className="text-xs text-purple-600 mt-2 bg-purple-50 p-2 rounded">
+                                                <i className="fas fa-hard-hat mr-1"></i>
+                                                <strong>Contractor:</strong> {activity.contractor}
+                                            </div>
+                                        )}
+                                        {activity.comments && (
+                                            <div className="text-xs text-blue-600 mt-2 bg-blue-50 p-2 rounded">
+                                                <i className="fas fa-comment mr-1"></i>
+                                                <strong>Comments:</strong> {activity.comments}
+                                            </div>
+                                        )}
+                                        {!activity.comments && (
+                                            <div className="text-xs text-gray-400 mt-2 italic">
+                                                <i className="fas fa-comment-slash mr-1"></i>
+                                                No comments
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {/* Activities Without Dates Section */}
+            {activitiesWithoutDates.length > 0 && (
+                <div className="glass rounded-2xl p-6 mt-6 shadow-xl">
+                    <div className="flex items-center gap-3 mb-6">
+                        <i className="fas fa-exclamation-triangle text-yellow-600 text-2xl"></i>
+                        <h3 className="text-2xl font-bold text-gray-800">
+                            Activities Without Dates
+                        </h3>
+                        <span className="ml-auto text-sm text-gray-600">
+                            {activitiesWithoutDates.length} {activitiesWithoutDates.length === 1 ? 'activity' : 'activities'}
+                        </span>
+                    </div>
+
+                    <div className="text-sm text-gray-600 mb-4 bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
+                        <i className="fas fa-info-circle mr-2"></i>
+                        These activities are missing Start and/or Finish dates. Add dates to move them to the calendar.
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {activitiesWithoutDates.map((activity, idx) => {
+                            const missingStart = !activity.start;
+                            const missingFinish = !activity.finish;
+                            const missingBoth = missingStart && missingFinish;
+
+                            return (
+                                <div
+                                    key={idx}
+                                    className="activity-card p-4 bg-white rounded-lg shadow-sm border-2 border-yellow-300"
+                                >
+                                    <div className="font-bold text-gray-800 mb-1 text-lg">{activity.id}</div>
+                                    <div className="text-sm text-gray-600 mb-3">{activity.name}</div>
+
+                                    <div className="flex items-center gap-2 text-xs text-gray-500 mb-3">
+                                        <span>
+                                            <i className="fas fa-map-marker-alt mr-1"></i>
+                                            {customAreaConfig[activity.area]?.name || activity.area}
+                                        </span>
+                                        {activity.original_duration && (
+                                            <span>
+                                                <i className="fas fa-clock mr-1"></i>
+                                                {activity.original_duration}d
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    {/* Floor and Zone Display */}
+                                    {(activity.floor || activity.zone) && (
+                                        <div className="flex gap-2 mb-3">
+                                            {activity.floor && (
+                                                <div className="text-xs text-indigo-600 bg-indigo-50 px-2 py-1 rounded">
+                                                    <i className="fas fa-layer-group mr-1"></i>
+                                                    <strong>Floor:</strong> {customIdPatternConfig.floors[activity.floor] || activity.floor}
+                                                </div>
+                                            )}
+                                            {activity.zone && (
+                                                <div className="text-xs text-teal-600 bg-teal-50 px-2 py-1 rounded">
+                                                    <i className="fas fa-th-large mr-1"></i>
+                                                    <strong>Zone:</strong> {customIdPatternConfig.zones[activity.zone] || activity.zone}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    <div className="bg-red-50 border border-red-200 rounded p-2 mb-3 text-xs">
+                                        <i className="fas fa-calendar-times text-red-600 mr-2"></i>
+                                        <span className="text-red-700 font-medium">
+                                            {missingBoth ? 'Missing both Start & Finish dates' :
+                                             missingStart ? 'Missing Start date' :
+                                             'Missing Finish date'}
+                                        </span>
+                                    </div>
+
+                                    <button
+                                        onClick={() => setEditingActivity(activity)}
+                                        className="w-full px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition text-sm font-medium"
+                                    >
+                                        <i className="fas fa-edit mr-2"></i>
+                                        Edit & Add Dates
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
+            {/* Modals */}
+            {showExportModal && (
+                <ExportOptionsModal
+                    onClose={() => setShowExportModal(false)}
+                    currentUpdate={currentUpdate}
+                    onExport={handleExportToExcel}
+                />
+            )}
+
+            {showBulkContractorModal && (
+                <BulkContractorModal
+                    onClose={() => setShowBulkContractorModal(false)}
+                    currentUpdate={currentUpdate}
+                    onAssign={handleBulkContractorAssignment}
+                />
+            )}
+
+            {showConfigureCodesModal && (
+                <ConfigureCodesModal
+                    onClose={() => setShowConfigureCodesModal(false)}
+                    areaConfig={customAreaConfig}
+                    idPatternConfig={customIdPatternConfig}
+                    onSave={handleSaveCodeConfiguration}
+                />
+            )}
+
+            {showSettingsModal && (
+                <SettingsModal
+                    onClose={() => setShowSettingsModal(false)}
+                    projectName={projectName}
+                    onSaveProjectName={handleSaveProjectName}
+                />
+            )}
+
+            {showImportWizard && (
+                <ImportWizard
+                    onClose={() => setShowImportWizard(false)}
+                    onComplete={handleImportComplete}
+                    currentUpdate={currentUpdate}
+                    onSaveFilters={(filters) => {
+                        // Save filters to current update
+                        setUpdates(prev => prev.map(u =>
+                            u.id === currentUpdateId ? { ...u, savedFilters: filters } : u
+                        ));
+                    }}
+                />
+            )}
+
+            {showManualEntry && (
+                <ManualEntryModal
+                    onClose={() => setShowManualEntry(false)}
+                    onAdd={handleImportComplete}
+                    currentUpdate={currentUpdateId}
+                    prefilledDate={selectedDate}
+                />
+            )}
+
+            {showRenameModal && currentUpdate && (
+                <RenameUpdateModal
+                    update={currentUpdate}
+                    onClose={() => setShowRenameModal(false)}
+                    onRename={handleRenameUpdate}
+                />
+            )}
+
+            {showDeleteModal && currentUpdate && (
+                <DeleteConfirmModal
+                    update={currentUpdate}
+                    onClose={() => setShowDeleteModal(false)}
+                    onConfirm={handleDeleteUpdate}
+                />
+            )}
+
+            {editingActivity && (
+                <EditActivityModal
+                    activity={editingActivity}
+                    onClose={() => setEditingActivity(null)}
+                    onSave={handleEditActivity}
+                    customAreaConfig={customAreaConfig}
+                    customIdPatternConfig={customIdPatternConfig}
+                />
+            )}
+
+            {/* Toast Notification */}
+            {toast && (
+                <Toast
+                    message={toast.message}
+                    type={toast.type}
+                    onClose={() => setToast(null)}
+                />
+            )}
+
+            {/* Footer */}
+            <footer className="mt-8 py-6 border-t-2 border-gray-200">
+                <div className="text-center text-gray-600">
+                    <p className="text-sm">
+                        Created by <span className="font-semibold text-gray-800">Lucio Aguilar</span>
+                    </p>
+                    <p className="text-xs mt-1">
+                        © 2022 - {new Date().getFullYear()} All Rights Reserved
+                    </p>
+                </div>
+            </footer>
+        </div>
+    );
+}
+

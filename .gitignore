@@ -55,7 +55,7 @@ node_modules/
 
 # Build outputs (if added later)
 dist/
-build/
+# build/ - COMMENTED OUT: We need build/app-bundle.js for GitHub Pages deployment
 
 # Temporary files
 *.tmp
