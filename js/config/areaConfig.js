@@ -48,7 +48,7 @@ const ID_PATTERN_CONFIG = {
 };
 
 // Parse Activity ID to extract Area, Floor, Zone
-const parseActivityID = (activityID) => {
+window.parseActivityID = (activityID) => {
     if (!activityID) return { area: null, floor: null, zone: null, number: null };
 
     // Pattern: AREA-FLOOR-ZONE-NUMBER (e.g., D-LL-INT-1230 or C-01-K-1190)
