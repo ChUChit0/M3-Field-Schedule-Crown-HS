@@ -1,12 +1,11 @@
 // Excel Import and Processing Utilities
-import { excelDateToString } from './dateUtils.js';
 
 /**
  * Process Excel file and extract data
  * @param {File} file - Excel file
  * @returns {Promise<{data: Array, headers: Array}>} - Parsed Excel data and headers
  */
-export const processExcelFile = (file) => {
+const processExcelFile = (file) => {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
 
@@ -42,7 +41,7 @@ export const processExcelFile = (file) => {
  * @param {Object} columnMapping - Mapping of field keys to column indices
  * @returns {Object} - Activity object
  */
-export const mapRowToActivity = (row, columnMapping) => {
+const mapRowToActivity = (row, columnMapping) => {
     const activity = {
         area: 'A' // Default area
     };
@@ -75,7 +74,7 @@ export const mapRowToActivity = (row, columnMapping) => {
  * @param {Object} filterConfig - Filter configuration {field: string, keywords: Array}
  * @returns {Array} - Filtered activities
  */
-export const applyKeywordFilters = (activities, filterConfig) => {
+const applyKeywordFilters = (activities, filterConfig) => {
     if (!filterConfig.keywords || filterConfig.keywords.length === 0) {
         return activities;
     }
@@ -93,7 +92,7 @@ export const applyKeywordFilters = (activities, filterConfig) => {
  * @param {Object} activity - Activity object
  * @returns {boolean} - True if valid
  */
-export const isValidActivity = (activity) => {
+const isValidActivity = (activity) => {
     // Only require ID and Name - dates are optional
     return activity.id && activity.name;
 };

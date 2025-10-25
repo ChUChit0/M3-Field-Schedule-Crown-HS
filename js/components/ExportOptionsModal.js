@@ -14,7 +14,7 @@
 
 const { useState } = React;
 
-export function ExportOptionsModal({ onClose, currentUpdate, onExport }) {
+function ExportOptionsModal({ onClose, currentUpdate, onExport }) {
     const [exportFilters, setExportFilters] = useState({
         contractor: '',
         area: '',

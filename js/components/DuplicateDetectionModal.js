@@ -1,9 +1,8 @@
 // Duplicate Detection Modal Component
 // Intelligent modal for handling duplicate activities during import
 
-import { getNextUpdateNumber } from '../utils/duplicateDetection.js';
 
-export function DuplicateDetectionModal({
+function DuplicateDetectionModal({
     analysis,
     currentUpdate,
     allUpdates,

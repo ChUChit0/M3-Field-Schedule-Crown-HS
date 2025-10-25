@@ -17,7 +17,7 @@
 
 const { useState } = React;
 
-export function ConfigureCodesModal({ onClose, areaConfig, idPatternConfig, onSave }) {
+function ConfigureCodesModal({ onClose, areaConfig, idPatternConfig, onSave }) {
     const [areas, setAreas] = useState({ ...areaConfig });
     const [floors, setFloors] = useState({ ...idPatternConfig.floors });
     const [zones, setZones] = useState({ ...idPatternConfig.zones });

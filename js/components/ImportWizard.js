@@ -25,7 +25,7 @@ const { useState, useRef } = React;
 // Import utilities that will be available globally
 // These are defined in the main app or imported modules
 
-export function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
+function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
     const [step, setStep] = useState(1); // 1: Upload, 2: Map, 3: Filter, 4: Preview
     const [excelData, setExcelData] = useState(null);
     const [headers, setHeaders] = useState([]);

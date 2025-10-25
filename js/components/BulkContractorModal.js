@@ -19,7 +19,7 @@
 
 const { useState } = React;
 
-export function BulkContractorModal({ onClose, currentUpdate, onAssign }) {
+function BulkContractorModal({ onClose, currentUpdate, onAssign }) {
     const [step, setStep] = useState(1); // 1: Filter, 2: Assign
     const [filters, setFilters] = useState({
         contractor: '',

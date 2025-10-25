@@ -13,7 +13,7 @@
 
 const { useState } = React;
 
-export function SettingsModal({ onClose, projectName, onSaveProjectName }) {
+function SettingsModal({ onClose, projectName, onSaveProjectName }) {
     const [name, setName] = useState(projectName);
 
     const handleSave = () => {

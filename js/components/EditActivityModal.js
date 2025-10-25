@@ -15,7 +15,7 @@
 
 const { useState } = React;
 
-export function EditActivityModal({ activity, onClose, onSave, customAreaConfig, customIdPatternConfig }) {
+function EditActivityModal({ activity, onClose, onSave, customAreaConfig, customIdPatternConfig }) {
     const [editedActivity, setEditedActivity] = useState({
         ...activity
     });

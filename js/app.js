@@ -16,20 +16,8 @@
 const { useState, useEffect, useMemo } = React;
 
 // Import all components
-import { ExportOptionsModal } from './components/ExportOptionsModal.js';
-import { BulkContractorModal } from './components/BulkContractorModal.js';
-import { ConfigureCodesModal } from './components/ConfigureCodesModal.js';
-import { SettingsModal } from './components/SettingsModal.js';
-import { ImportWizard } from './components/ImportWizard.js';
-import { ManualEntryModal } from './components/ManualEntryModal.js';
-import { RenameUpdateModal } from './components/RenameUpdateModal.js';
-import { DeleteConfirmModal } from './components/DeleteConfirmModal.js';
-import { EditActivityModal } from './components/EditActivityModal.js';
-import { Toast } from './components/Toast.js';
 
 // Import utilities
-import { formatDate, dateToString } from './utils/dateUtils.js';
-import { areaConfig, ID_PATTERN_CONFIG } from './config/areaConfig.js';
 
 // TODAY constant
 const TODAY = new Date();
@@ -45,7 +33,7 @@ TODAY.setHours(0, 0, 0, 0);
  * - LocalStorage persistence
  * - Custom configurations
  */
-export function CalendarScheduleViewer() {
+function CalendarScheduleViewer() {
     // State: Updates management
     const [updates, setUpdates] = useState([
         {

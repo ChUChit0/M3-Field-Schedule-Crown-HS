@@ -9,7 +9,7 @@
  * @param {Object} activity2 - Second activity
  * @returns {Object} - {isDuplicate: boolean, matchScore: number, differences: Array}
  */
-export const compareActivities = (activity1, activity2) => {
+const compareActivities = (activity1, activity2) => {
     const fields = ['id', 'name', 'start', 'finish'];
     let matches = 0;
     const differences = [];
@@ -49,7 +49,7 @@ export const compareActivities = (activity1, activity2) => {
  * @param {Array} existingActivities - Activities already in the update
  * @returns {Object} - Analysis results with statistics and recommendations
  */
-export const analyzeImport = (importActivities, existingActivities) => {
+const analyzeImport = (importActivities, existingActivities) => {
     const duplicates = [];
     const newActivities = [];
     const updates = [];
@@ -205,7 +205,7 @@ const generateRecommendation = (stats) => {
  * @param {Array} updates - Array of existing updates
  * @returns {number} - Next update number
  */
-export const getNextUpdateNumber = (updates) => {
+const getNextUpdateNumber = (updates) => {
     const numbers = updates
         .map(u => {
             const match = u.name.match(/\d+/);

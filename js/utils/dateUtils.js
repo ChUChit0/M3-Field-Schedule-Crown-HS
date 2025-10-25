@@ -5,7 +5,7 @@
  * @param {string} dateStr - Date string in MM/DD/YY format
  * @returns {Date|null} - Date object or null if invalid
  */
-export const formatDate = (dateStr) => {
+window.formatDate = (dateStr) => {
     if (!dateStr) return null;
     const [month, day, year] = dateStr.split('/');
     const fullYear = year.length === 2 ? '20' + year : year;
@@ -17,7 +17,7 @@ export const formatDate = (dateStr) => {
  * @param {Date} date - Date object
  * @returns {string} - Date string in MM/DD/YY format
  */
-export const dateToString = (date) => {
+window.dateToString = (date) => {
     if (!date) return '';
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
@@ -31,7 +31,7 @@ export const dateToString = (date) => {
  * @param {number|string} serial - Excel serial date number
  * @returns {string} - Date string in MM/DD/YY format
  */
-export const excelDateToString = (serial) => {
+const excelDateToString = (serial) => {
     if (!serial || serial === '') return '';
 
     // If it's already a string date, return it
@@ -57,7 +57,7 @@ export const excelDateToString = (serial) => {
  * Get today's date with time set to midnight
  * @returns {Date} - Today's date at 00:00:00
  */
-export const getToday = () => {
+const getToday = () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     return today;

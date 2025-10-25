@@ -10,7 +10,7 @@
  * @param {Function} props.onConfirm - Callback to confirm deletion
  */
 
-export function DeleteConfirmModal({ update, onClose, onConfirm }) {
+function DeleteConfirmModal({ update, onClose, onConfirm }) {
     return (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
             <div className="glass rounded-2xl p-8 max-w-md w-full">

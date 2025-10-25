@@ -11,7 +11,7 @@
 
 const { useState } = React;
 
-export function RenameUpdateModal({ update, onClose, onRename }) {
+function RenameUpdateModal({ update, onClose, onRename }) {
     const [newName, setNewName] = useState(update.name);
 
     const handleSubmit = () => {

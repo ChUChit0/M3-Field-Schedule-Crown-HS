@@ -14,7 +14,7 @@
 /**
  * Save main schedule data to LocalStorage
  */
-export function saveToLocalStorage(updates, currentUpdateId) {
+function saveToLocalStorage(updates, currentUpdateId) {
     try {
         const dataToSave = {
             updates,
@@ -33,7 +33,7 @@ export function saveToLocalStorage(updates, currentUpdateId) {
 /**
  * Load main schedule data from LocalStorage
  */
-export function loadFromLocalStorage() {
+function loadFromLocalStorage() {
     try {
         const saved = localStorage.getItem('crownScheduleData');
         if (saved) {
@@ -51,7 +51,7 @@ export function loadFromLocalStorage() {
 /**
  * Export data as JSON file for backup
  */
-export function exportBackup(updates, currentUpdateId) {
+function exportBackup(updates, currentUpdateId) {
     try {
         const dataToExport = {
             updates,
@@ -80,7 +80,7 @@ export function exportBackup(updates, currentUpdateId) {
 /**
  * Import data from JSON backup file
  */
-export function importBackup(file, onSuccess, onError) {
+function importBackup(file, onSuccess, onError) {
     const reader = new FileReader();
     reader.onload = (e) => {
         try {
@@ -106,7 +106,7 @@ export function importBackup(file, onSuccess, onError) {
 /**
  * Clear all schedule data from LocalStorage
  */
-export function clearLocalStorage() {
+function clearLocalStorage() {
     try {
         localStorage.removeItem('crownScheduleData');
         console.log('🗑️ LocalStorage cleared');

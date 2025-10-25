@@ -14,7 +14,7 @@
 
 const { useState } = React;
 
-export function ManualEntryModal({ onClose, onAdd, currentUpdate, prefilledDate = null }) {
+function ManualEntryModal({ onClose, onAdd, currentUpdate, prefilledDate = null }) {
     const [activity, setActivity] = useState({
         id: '',
         name: '',
