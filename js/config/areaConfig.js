@@ -46,3 +46,29 @@ const ID_PATTERN_CONFIG = {
         'EXT': 'Exterior'
     }
 };
+
+// Parse Activity ID to extract Area, Floor, Zone
+const parseActivityID = (activityID) => {
+    if (!activityID) return { area: null, floor: null, zone: null, number: null };
+
+    // Pattern: AREA-FLOOR-ZONE-NUMBER (e.g., D-LL-INT-1230 or C-01-K-1190)
+    const parts = activityID.split('-');
+
+    if (parts.length >= 2) {
+        const area = parts[0].trim(); // First part is Area (A, B, C, D, E, F) - trim spaces
+        const floor = parts.length >= 3 ? parts[1].trim() : null; // Second part is Floor (LL, 01, 02, etc.)
+        const zone = parts.length >= 4 ? parts[2].trim() : null; // Third part is Zone (INT, K, BAT, etc.)
+        const number = parts.length >= 4 ? parts[3].trim() : (parts.length >= 3 ? parts[2].trim() : parts[1].trim()); // Last part is number
+
+        return {
+            area: area,
+            floor: floor ? (ID_PATTERN_CONFIG.floors[floor] || floor) : null,
+            zone: zone ? (ID_PATTERN_CONFIG.zones[zone] || zone) : null,
+            number: number,
+            rawFloor: floor,
+            rawZone: zone
+        };
+    }
+
+    return { area: null, floor: null, zone: null, number: null };
+};
