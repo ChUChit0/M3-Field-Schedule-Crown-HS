@@ -1,0 +1,201 @@
+/**
+ * Crown HS Schedule Calendar - Main Styles
+ *
+ * Glass morphism design with modern animations.
+ * Optimized for both desktop and mobile viewing.
+ */
+
+/* ==================== Base Styles ==================== */
+body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: linear-gradient(135deg, #475569 0%, #1e293b 100%);
+    min-height: 100vh;
+}
+
+/* ==================== Glass Morphism ==================== */
+.glass {
+    background: rgba(248, 250, 252, 0.95);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    box-shadow: 0 8px 32px rgba(15, 23, 42, 0.1);
+}
+
+/* ==================== Calendar Styles ==================== */
+.calendar-day {
+    transition: all 0.2s ease;
+    cursor: pointer;
+}
+
+.calendar-day:hover {
+    transform: scale(1.05);
+    box-shadow: 0 8px 16px rgba(0,0,0,0.15);
+}
+
+.calendar-day.today {
+    background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+    color: white;
+    font-weight: bold;
+    box-shadow: 0 0 20px rgba(245, 158, 11, 0.6);
+}
+
+.calendar-day.selected {
+    background: linear-gradient(135deg, #94a3b8 0%, #64748b 100%);
+    color: white;
+    font-weight: bold;
+    transform: scale(1.1);
+}
+
+.calendar-day.has-activities {
+    border: 2px solid #94a3b8;
+}
+
+.activity-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+    margin: 1px;
+}
+
+/* ==================== Activity Cards ==================== */
+.activity-card {
+    transition: all 0.3s ease;
+}
+
+.activity-card:hover {
+    transform: translateX(8px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+}
+
+/* ==================== Modal Styles ==================== */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 20px;
+}
+
+.modal-content {
+    max-width: 1200px;
+    max-height: 90vh;
+    overflow-y: auto;
+    width: 100%;
+}
+
+/* ==================== Keyword Badges ==================== */
+.keyword-badge {
+    display: inline-flex;
+    align-items: center;
+    background: #475569;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin: 4px;
+    font-size: 0.875rem;
+}
+
+.keyword-badge button {
+    margin-left: 8px;
+    color: white;
+    opacity: 0.8;
+}
+
+.keyword-badge button:hover {
+    opacity: 1;
+}
+
+/* ==================== Animations ==================== */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+    animation: fadeIn 0.4s ease-out;
+}
+
+/* ==================== Step Indicator (Import Wizard) ==================== */
+.step-indicator {
+    display: flex;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.step {
+    flex: 1;
+    text-align: center;
+    position: relative;
+}
+
+.step-circle {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: #e5e7eb;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 8px;
+    font-weight: bold;
+    color: #6b7280;
+}
+
+.step.active .step-circle {
+    background: #475569;
+    color: white;
+}
+
+.step.completed .step-circle {
+    background: #10b981;
+    color: white;
+}
+
+.step-line {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    width: 100%;
+    height: 2px;
+    background: #e5e7eb;
+    z-index: -1;
+}
+
+.step.completed .step-line {
+    background: #10b981;
+}
+
+/* ==================== Toast Notifications ==================== */
+.toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: white;
+    padding: 16px 24px;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    z-index: 2000;
+    animation: slideIn 0.3s ease-out;
+}
+
+.toast.success {
+    border-left: 4px solid #10b981;
+}
+
+.toast.error {
+    border-left: 4px solid #ef4444;
+}
+
+@keyframes slideIn {
+    from { transform: translateX(400px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
