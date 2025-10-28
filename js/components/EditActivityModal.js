@@ -19,6 +19,94 @@ function EditActivityModal({ activity, onClose, onSave, customAreaConfig, custom
     const [editedActivity, setEditedActivity] = useState({
         ...activity
     });
+    const [applyToAllWithSameName, setApplyToAllWithSameName] = useState(false);
+
+    // Marker state management
+    const [marker, setMarker] = useState({
+        type: activity.marker?.type || 'none',
+        applyTo: activity.marker?.applyTo || 'finish'
+    });
+
+    // Calculate date variances and duration
+    const calculateVariances = () => {
+        const parseDate = (dateStr) => {
+            if (!dateStr) return null;
+            // Try MM/DD/YY format
+            const parts = dateStr.split('/');
+            if (parts.length === 3) {
+                let [month, day, year] = parts;
+                year = year.length === 2 ? '20' + year : year;
+                return new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`);
+            }
+            // Try YYYY-MM-DD format
+            const d = new Date(dateStr);
+            return isNaN(d.getTime()) ? null : d;
+        };
+
+        const calculateDays = (date1, date2) => {
+            if (!date1 || !date2) return null;
+            const diffTime = date2.getTime() - date1.getTime();
+            return Math.round(diffTime / (1000 * 60 * 60 * 24));
+        };
+
+        const startDate = parseDate(editedActivity.start);
+        const finishDate = parseDate(editedActivity.finish);
+        const actualStartDate = parseDate(editedActivity.actual_start);
+        const actualFinishDate = parseDate(editedActivity.actual_finish);
+
+        return {
+            startVariance: calculateDays(startDate, actualStartDate),
+            finishVariance: calculateDays(finishDate, actualFinishDate),
+            actualDuration: calculateDays(actualStartDate, actualFinishDate)
+        };
+    };
+
+    const variances = calculateVariances();
+
+    // Marker configuration with professional project management standards
+    const markerTypes = {
+        none: {
+            name: 'None',
+            icon: '',
+            color: '',
+            description: 'No special marker'
+        },
+        milestone: {
+            name: 'Milestone',
+            icon: 'fas fa-gem',
+            color: '#f59e0b',
+            bgColor: '#fef3c7',
+            description: 'Major project deliverable or phase completion'
+        },
+        critical: {
+            name: 'Critical Path',
+            icon: 'fas fa-exclamation-triangle',
+            color: '#ef4444',
+            bgColor: '#fee2e2',
+            description: 'Activity that cannot be delayed without impacting project completion'
+        },
+        inspection: {
+            name: 'Inspection Point',
+            icon: 'fas fa-clipboard-check',
+            color: '#10b981',
+            bgColor: '#d1fae5',
+            description: 'Safety inspection, code compliance, or required approval'
+        },
+        deliverable: {
+            name: 'Key Deliverable',
+            icon: 'fas fa-flag-checkered',
+            color: '#3b82f6',
+            bgColor: '#dbeafe',
+            description: 'Draw request (payment), submittal, or phase completion'
+        },
+        deadline: {
+            name: 'Deadline',
+            icon: 'fas fa-clock',
+            color: '#f97316',
+            bgColor: '#ffedd5',
+            description: 'Contractual deadline, permit deadline, or time-sensitive date'
+        }
+    };
 
     const handleSave = () => {
         if (!editedActivity.id || !editedActivity.name) {
@@ -31,13 +119,20 @@ function EditActivityModal({ activity, onClose, onSave, customAreaConfig, custom
             return;
         }
 
-        onSave(editedActivity);
+        // Include marker data in the saved activity
+        const activityWithMarker = {
+            ...editedActivity,
+            marker: marker.type !== 'none' ? marker : null
+        };
+
+        // Pass flag to indicate if contractor should be applied to all activities with same name
+        onSave(activityWithMarker, applyToAllWithSameName);
         onClose();
     };
 
     return (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-            <div className="glass rounded-2xl p-8 max-w-2xl w-full">
+            <div className="glass rounded-2xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
                 <h2 className="text-2xl font-bold mb-4">
                     <i className="fas fa-edit mr-3 text-blue-600"></i>
                     Edit Activity
@@ -87,6 +182,22 @@ function EditActivityModal({ activity, onClose, onSave, customAreaConfig, custom
                             className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none"
                             placeholder="e.g., M3, ACME, XYZ Corp..."
                         />
+
+                        {/* Bulk Assignment Checkbox */}
+                        {editedActivity.contractor && (
+                            <label className="flex items-center gap-2 mt-3 p-3 bg-blue-50 border-2 border-blue-200 rounded-lg text-sm text-gray-700 cursor-pointer hover:bg-blue-100 transition">
+                                <input
+                                    type="checkbox"
+                                    checked={applyToAllWithSameName}
+                                    onChange={(e) => setApplyToAllWithSameName(e.target.checked)}
+                                    className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                />
+                                <span className="flex-1">
+                                    <i className="fas fa-users-cog mr-2 text-blue-600"></i>
+                                    Apply contractor "<strong>{editedActivity.contractor}</strong>" to <strong>all activities</strong> with name: "<strong className="text-blue-700">{editedActivity.name}</strong>"
+                                </span>
+                            </label>
+                        )}
                     </div>
 
                     <div>
@@ -205,6 +316,60 @@ function EditActivityModal({ activity, onClose, onSave, customAreaConfig, custom
                         />
                     </div>
 
+                    {/* Variance Calculations Display */}
+                    {(variances.startVariance !== null || variances.finishVariance !== null || variances.actualDuration !== null) && (
+                        <div className="col-span-2 bg-gray-50 border border-gray-300 rounded-lg p-3">
+                            <div className="grid grid-cols-3 gap-3 text-sm">
+                                {variances.startVariance !== null && (
+                                    <div className="text-center">
+                                        <div className="text-xs text-gray-600 mb-1">Start Variance</div>
+                                        <div className={`font-bold text-lg ${
+                                            variances.startVariance > 0 ? 'text-red-600' :
+                                            variances.startVariance < 0 ? 'text-green-600' :
+                                            'text-blue-600'
+                                        }`}>
+                                            {variances.startVariance > 0 ? '+' : ''}{variances.startVariance} days
+                                        </div>
+                                        <div className="text-xs text-gray-500 mt-1">
+                                            {variances.startVariance > 0 ? '(Started late)' :
+                                             variances.startVariance < 0 ? '(Started early)' :
+                                             '(On time)'}
+                                        </div>
+                                    </div>
+                                )}
+                                {variances.finishVariance !== null && (
+                                    <div className="text-center">
+                                        <div className="text-xs text-gray-600 mb-1">Finish Variance</div>
+                                        <div className={`font-bold text-lg ${
+                                            variances.finishVariance > 0 ? 'text-red-600' :
+                                            variances.finishVariance < 0 ? 'text-green-600' :
+                                            'text-blue-600'
+                                        }`}>
+                                            {variances.finishVariance > 0 ? '+' : ''}{variances.finishVariance} days
+                                        </div>
+                                        <div className="text-xs text-gray-500 mt-1">
+                                            {variances.finishVariance > 0 ? '(Finished late)' :
+                                             variances.finishVariance < 0 ? '(Finished early)' :
+                                             '(On time)'}
+                                        </div>
+                                    </div>
+                                )}
+                                {variances.actualDuration !== null && (
+                                    <div className="text-center">
+                                        <div className="text-xs text-gray-600 mb-1">Actual Duration</div>
+                                        <div className="font-bold text-lg text-purple-600">
+                                            {variances.actualDuration} days
+                                        </div>
+                                        <div className="text-xs text-gray-500 mt-1">
+                                            {editedActivity.original_duration &&
+                                             `(Planned: ${editedActivity.original_duration} days)`}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="col-span-2">
                         <label className="block text-sm font-semibold mb-1">Comments</label>
                         <textarea
@@ -214,6 +379,98 @@ function EditActivityModal({ activity, onClose, onSave, customAreaConfig, custom
                             rows="3"
                             placeholder="Additional notes..."
                         />
+                    </div>
+
+                    {/* Marker Selection Section */}
+                    <div className="col-span-2 mt-4 pt-4 border-t-2 border-gray-200">
+                        <h3 className="text-lg font-bold text-gray-800 mb-3 flex items-center">
+                            <i className="fas fa-star mr-2 text-yellow-500"></i>
+                            Project Marker (Optional)
+                        </h3>
+                        <div className="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-3 mb-4">
+                            <p className="text-sm text-blue-800">
+                                <i className="fas fa-info-circle mr-2"></i>
+                                Mark important dates on the calendar with professional project management indicators
+                            </p>
+                        </div>
+
+                        {/* Marker Type Selection */}
+                        <div className="mb-4">
+                            <label className="block text-sm font-semibold mb-2">Marker Type</label>
+                            <select
+                                value={marker.type}
+                                onChange={(e) => setMarker({...marker, type: e.target.value})}
+                                className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-base"
+                            >
+                                {Object.keys(markerTypes).map(key => {
+                                    const markerInfo = markerTypes[key];
+                                    return (
+                                        <option key={key} value={key}>
+                                            {markerInfo.name} {markerInfo.description ? `- ${markerInfo.description}` : ''}
+                                        </option>
+                                    );
+                                })}
+                            </select>
+                        </div>
+
+                        {/* Visual Preview of Selected Marker */}
+                        {marker.type !== 'none' && (
+                            <div
+                                className="mb-4 p-4 rounded-lg border-2"
+                                style={{
+                                    backgroundColor: markerTypes[marker.type].bgColor,
+                                    borderColor: markerTypes[marker.type].color
+                                }}
+                            >
+                                <div className="flex items-center gap-3">
+                                    <i
+                                        className={`${markerTypes[marker.type].icon} text-2xl`}
+                                        style={{ color: markerTypes[marker.type].color }}
+                                    ></i>
+                                    <div>
+                                        <p className="font-bold text-gray-800">{markerTypes[marker.type].name}</p>
+                                        <p className="text-sm text-gray-600">{markerTypes[marker.type].description}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Apply To Radio Buttons */}
+                        {marker.type !== 'none' && (
+                            <div>
+                                <label className="block text-sm font-semibold mb-2">Apply Marker To:</label>
+                                <div className="flex gap-4">
+                                    <label className="flex items-center gap-2 p-3 border-2 border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition flex-1">
+                                        <input
+                                            type="radio"
+                                            name="markerApplyTo"
+                                            value="start"
+                                            checked={marker.applyTo === 'start'}
+                                            onChange={(e) => setMarker({...marker, applyTo: e.target.value})}
+                                            className="w-4 h-4 text-blue-600"
+                                        />
+                                        <div className="flex-1">
+                                            <p className="font-semibold text-gray-800">Start Date</p>
+                                            <p className="text-xs text-gray-600">{editedActivity.start || 'Not set'}</p>
+                                        </div>
+                                    </label>
+                                    <label className="flex items-center gap-2 p-3 border-2 border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition flex-1">
+                                        <input
+                                            type="radio"
+                                            name="markerApplyTo"
+                                            value="finish"
+                                            checked={marker.applyTo === 'finish'}
+                                            onChange={(e) => setMarker({...marker, applyTo: e.target.value})}
+                                            className="w-4 h-4 text-blue-600"
+                                        />
+                                        <div className="flex-1">
+                                            <p className="font-semibold text-gray-800">Finish Date</p>
+                                            <p className="text-xs text-gray-600">{editedActivity.finish || 'Not set'}</p>
+                                        </div>
+                                    </label>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
 

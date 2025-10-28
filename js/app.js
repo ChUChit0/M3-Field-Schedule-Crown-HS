@@ -52,13 +52,35 @@ function CalendarScheduleViewer() {
     const [currentMonth, setCurrentMonth] = useState(new Date());
     const [selectedDate, setSelectedDate] = useState(TODAY);
 
-    // State: Filters
-    const [filters, setFilters] = useState({
-        area: 'all',
-        floor: '',
-        zone: '',
-        workType: 'all'
+    // State: Dynamic Filters (user can add/remove any column filter)
+    const [activeFilters, setActiveFilters] = useState([]);
+    // Each filter: { id: uniqueId, column: 'area', values: [] }
+
+    // State: Track last clicked index for Shift+Click range selection
+    const [lastClickedIndex, setLastClickedIndex] = useState({});
+    // { filterId: lastIndex }
+
+    // State: Filter search terms (for searching within filter values)
+    const [filterSearchTerms, setFilterSearchTerms] = useState({});
+    // { filterId: 'search term' }
+
+    // State: Expanded filter (accordion - only one filter expanded at a time)
+    const [expandedFilterId, setExpandedFilterId] = useState(null);
+
+    // State: Saved Filter Layouts (persisted in localStorage)
+    const [savedFilterLayouts, setSavedFilterLayouts] = useState(() => {
+        const saved = localStorage.getItem('crownSchedule_filterLayouts');
+        return saved ? JSON.parse(saved) : [];
     });
+
+    // State: Show Save Filter Layout Modal
+    const [showSaveLayoutModal, setShowSaveLayoutModal] = useState(false);
+
+    // State: Assign contractor section expanded/collapsed
+    const [isAssignExpanded, setIsAssignExpanded] = useState(false);
+
+    // State: Day activities search
+    const [daySearchTerm, setDaySearchTerm] = useState('');
 
     // State: Modal visibility
     const [showImportWizard, setShowImportWizard] = useState(false);
@@ -69,6 +91,7 @@ function CalendarScheduleViewer() {
     const [showBulkContractorModal, setShowBulkContractorModal] = useState(false);
     const [showConfigureCodesModal, setShowConfigureCodesModal] = useState(false);
     const [showSettingsModal, setShowSettingsModal] = useState(false);
+    const [showComparisonModal, setShowComparisonModal] = useState(false);
     const [editingActivity, setEditingActivity] = useState(null);
     const [toast, setToast] = useState(null);
 
@@ -86,6 +109,12 @@ function CalendarScheduleViewer() {
     const [customIdPatternConfig, setCustomIdPatternConfig] = useState(() => {
         const saved = localStorage.getItem('customIdPatternConfig');
         return saved ? JSON.parse(saved) : ID_PATTERN_CONFIG;
+    });
+
+    // State: Custom Headers (user-defined columns)
+    const [customHeaders, setCustomHeaders] = useState(() => {
+        const saved = localStorage.getItem('customHeaders');
+        return saved ? JSON.parse(saved) : [];
     });
 
     // Current update helper
@@ -223,32 +252,137 @@ function CalendarScheduleViewer() {
 
     /**
      * Handler: Import complete (from Excel or Manual Entry)
+     * Auto-copies contractors from previous updates based on Activity ID
+     * Prevents duplicate activities in the SAME update
      */
     const handleImportComplete = (activities, updateId) => {
-        setUpdates(prev => prev.map(u =>
-            u.id === updateId ? { ...u, activities: [...u.activities, ...activities], loaded: true } : u
-        ));
-        showToast(`Imported ${activities.length} activities`, 'success');
+        // Get current update's existing activities
+        const currentUpdateActivities = updates.find(u => u.id === updateId)?.activities || [];
+
+        // Create a Set of existing Activity IDs in current update for fast lookup
+        const existingActivityIds = new Set(currentUpdateActivities.map(act => act.id));
+
+        // Filter out duplicates (activities with same ID already in this update)
+        let duplicateCount = 0;
+        const newActivitiesOnly = activities.filter(newAct => {
+            if (existingActivityIds.has(newAct.id)) {
+                duplicateCount++;
+                return false; // Skip duplicate
+            }
+            return true; // Keep new activity
+        });
+
+        // If all activities are duplicates, show message and exit
+        if (newActivitiesOnly.length === 0) {
+            showToast(`⚠️ All ${activities.length} activities already exist in this update. No duplicates added.`, 'error');
+            return;
+        }
+
+        // Auto-copy contractors from previous updates
+        const previousUpdates = updates.filter(u => u.id !== updateId && u.activities.length > 0);
+
+        if (previousUpdates.length > 0) {
+            // Create a map of Activity ID → Contractor from ALL previous updates
+            const contractorMap = {};
+            previousUpdates.forEach(prevUpdate => {
+                prevUpdate.activities.forEach(act => {
+                    if (act.id && act.contractor) {
+                        // Use Activity ID as key, store most recent contractor
+                        contractorMap[act.id] = act.contractor;
+                    }
+                });
+            });
+
+            // Apply contractors to new activities
+            let copiedCount = 0;
+            const activitiesWithContractors = newActivitiesOnly.map(newAct => {
+                // If activity doesn't have contractor but exists in previous updates
+                if (!newAct.contractor && newAct.id && contractorMap[newAct.id]) {
+                    copiedCount++;
+                    return {
+                        ...newAct,
+                        contractor: contractorMap[newAct.id]
+                    };
+                }
+                return newAct;
+            });
+
+            // Update activities with auto-copied contractors
+            setUpdates(prev => prev.map(u =>
+                u.id === updateId ? { ...u, activities: [...u.activities, ...activitiesWithContractors], loaded: true } : u
+            ));
+
+            // Show toast with comprehensive stats
+            let message = `✅ Imported ${newActivitiesOnly.length} new activities.`;
+            if (copiedCount > 0) {
+                message += ` Auto-copied ${copiedCount} contractors! 🎯`;
+            }
+            if (duplicateCount > 0) {
+                message += `\n\nℹ️ Skipped ${duplicateCount} duplicates (already in this update).`;
+            }
+            showToast(message, 'success');
+        } else {
+            // No previous updates, just import with duplicate check
+            setUpdates(prev => prev.map(u =>
+                u.id === updateId ? { ...u, activities: [...u.activities, ...newActivitiesOnly], loaded: true } : u
+            ));
+
+            let message = `✅ Imported ${newActivitiesOnly.length} activities.`;
+            if (duplicateCount > 0) {
+                message += `\n\nℹ️ Skipped ${duplicateCount} duplicates (already in this update).`;
+            }
+            showToast(message, 'success');
+        }
     };
 
     /**
      * Handler: Edit activity
      */
-    const handleEditActivity = (editedActivity) => {
-        setUpdates(prev => prev.map(u => {
-            if (u.id === currentUpdateId) {
-                // Find and replace the activity
-                const updatedActivities = u.activities.map(act =>
-                    act.id === editedActivity.id && act.name === editedActivity.name
-                        ? editedActivity
-                        : act
-                );
-                return { ...u, activities: updatedActivities };
-            }
-            return u;
-        }));
-        setEditingActivity(null);
-        showToast('Activity updated successfully', 'success');
+    const handleEditActivity = (editedActivity, applyToAllWithSameName = false) => {
+        if (applyToAllWithSameName && editedActivity.contractor) {
+            // Bulk update: Apply contractor to all activities with same name
+            let updatedCount = 0;
+
+            setUpdates(prev => prev.map(u => {
+                if (u.id === currentUpdateId) {
+                    const updatedActivities = u.activities.map(act => {
+                        if (act.name === editedActivity.name) {
+                            updatedCount++;
+                            return { ...act, contractor: editedActivity.contractor };
+                        }
+                        // Still update the edited activity with all its changes
+                        if (act.id === editedActivity.id && act.name === editedActivity.name) {
+                            return editedActivity;
+                        }
+                        return act;
+                    });
+                    return { ...u, activities: updatedActivities };
+                }
+                return u;
+            }));
+
+            setEditingActivity(null);
+            showToast(
+                `Contractor "${editedActivity.contractor}" assigned to ${updatedCount} activities with name "${editedActivity.name}"`,
+                'success'
+            );
+        } else {
+            // Single activity update (original behavior)
+            setUpdates(prev => prev.map(u => {
+                if (u.id === currentUpdateId) {
+                    // Find and replace the activity
+                    const updatedActivities = u.activities.map(act =>
+                        act.id === editedActivity.id && act.name === editedActivity.name
+                            ? editedActivity
+                            : act
+                    );
+                    return { ...u, activities: updatedActivities };
+                }
+                return u;
+            }));
+            setEditingActivity(null);
+            showToast('Activity updated successfully', 'success');
+        }
     };
 
     /**
@@ -278,19 +412,174 @@ function CalendarScheduleViewer() {
     }, [currentUpdate]);
 
     /**
-     * Memo: Filter activities based on current filter settings
+     * Column name mapping (internal property → Excel header)
+     * These are the preset column names that cannot be deleted
+     */
+    const columnNameMapping = {
+        'id': 'Activity ID',
+        'name': 'Activity Name',
+        'contractor': 'Contractor / Sub',
+        'original_duration': 'Original Duration',
+        'start': 'Start Date',
+        'finish': 'Finish Date',
+        'actual_start': 'Actual Start',
+        'actual_finish': 'Actual Finish',
+        'comments': 'Comments',
+        'area': 'Area',
+        'marker': 'Marker Type',
+        // These are additional detected columns
+        'floor': 'Floor',
+        'zone': 'Zone',
+        'new_rem_duration': 'New Rem Duration',
+        'raw_floor': 'Raw Floor',
+        'activity_number': 'Activity Number',
+        '_original_index': 'Original Index'
+    };
+
+    /**
+     * Memo: Get available columns for filtering (preset + detected + custom headers)
+     */
+    const availableColumns = useMemo(() => {
+        if (!currentUpdate || currentUpdate.activities.length === 0) return [];
+
+        // Helper function to normalize keys for comparison (lowercase, no underscores/spaces)
+        const normalizeKey = (key) => key.toLowerCase().replace(/[_\s-]/g, '');
+
+        // Start with ALL preset columns from mapping (always available)
+        const presetColumns = Object.entries(columnNameMapping).map(([key, label]) => ({
+            value: key,
+            label: label,
+            normalizedKey: normalizeKey(key),
+            isPreset: true
+        }));
+
+        // Create a Set of normalized preset keys to avoid duplicates
+        const presetNormalizedKeys = new Set(presetColumns.map(col => col.normalizedKey));
+
+        // Get detected columns from activities (may include unmapped columns)
+        const sampleActivity = currentUpdate.activities[0];
+        const detectedKeys = Object.keys(sampleActivity)
+            .filter(key => key !== 'uniqueId'); // Exclude internal keys
+
+        const detectedColumns = detectedKeys
+            .filter(key => !presetNormalizedKeys.has(normalizeKey(key))) // Only non-preset columns
+            .map(key => ({
+                value: key,
+                label: key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1'),
+                normalizedKey: normalizeKey(key),
+                isDetected: true
+            }));
+
+        // Add user-defined custom headers
+        const customColumns = customHeaders.map(header => ({
+            value: header.key,
+            label: header.label,
+            normalizedKey: normalizeKey(header.key),
+            isCustom: true
+        }));
+
+        // Combine all columns
+        const allColumns = [...presetColumns, ...detectedColumns, ...customColumns];
+
+        // Remove duplicates by value (unique keys only)
+        const uniqueColumns = [];
+        const seenValues = new Set();
+
+        for (const column of allColumns) {
+            if (!seenValues.has(column.value)) {
+                seenValues.add(column.value);
+                uniqueColumns.push(column);
+            }
+        }
+
+        // Sort alphabetically by label
+        return uniqueColumns.sort((a, b) => a.label.localeCompare(b.label));
+    }, [currentUpdate, customHeaders]);
+
+    /**
+     * Format marker type names for display
+     */
+    const formatMarkerName = (markerType) => {
+        const markerNames = {
+            'milestone': 'Milestone',
+            'critical': 'Critical Path',
+            'inspection': 'Inspection Point',
+            'deliverable': 'Key Deliverable',
+            'deadline': 'Deadline'
+        };
+        return markerNames[markerType] || markerType;
+    };
+
+    /**
+     * Get unique values for a specific column
+     */
+    const getUniqueValuesForColumn = (column) => {
+        if (!currentUpdate) return [];
+
+        const values = new Set();
+        currentUpdate.activities.forEach(activity => {
+            // Special handling for marker (extract marker.type)
+            if (column === 'marker') {
+                const markerType = activity.marker?.type;
+                if (markerType && markerType !== 'none') {
+                    values.add(markerType);
+                }
+            } else {
+                const value = activity[column];
+                if (value !== null && value !== undefined && value !== '') {
+                    values.add(String(value));
+                }
+            }
+        });
+
+        return Array.from(values).sort();
+    };
+
+    /**
+     * Apply dynamic filters to activities
+     */
+    const applyDynamicFilters = (activities, filters = null) => {
+        // Use provided filters or fall back to activeFilters from state
+        const filtersToUse = filters || activeFilters;
+
+        if (filtersToUse.length === 0) return activities;
+
+        return activities.filter(activity => {
+            // Activity must match ALL active filters (AND logic between filters)
+            return filtersToUse.every(filter => {
+                // Skip filters with no values selected
+                if (!filter.values || filter.values.length === 0) return true;
+
+                // Special handling for marker filter
+                if (filter.column === 'marker') {
+                    const markerType = activity.marker?.type;
+                    if (!markerType || markerType === 'none') return false;
+
+                    // Match ANY of the selected marker types (OR logic within filter)
+                    return filter.values.some(filterValue =>
+                        markerType === filterValue
+                    );
+                }
+
+                // Standard filtering for other columns
+                const activityValue = activity[filter.column];
+                if (!activityValue) return false;
+
+                // Match ANY of the selected values (OR logic within filter)
+                return filter.values.some(filterValue =>
+                    String(activityValue) === String(filterValue)
+                );
+            });
+        });
+    };
+
+    /**
+     * Memo: Filter activities based on dynamic filters
      */
     const filteredActivities = useMemo(() => {
         if (!currentUpdate) return [];
-
-        return currentUpdate.activities.filter(activity => {
-            if (filters.area !== 'all' && activity.area !== filters.area) return false;
-            if (filters.floor && activity.floor !== filters.floor) return false;
-            if (filters.zone && activity.zone !== filters.zone) return false;
-            if (filters.workType !== 'all' && activity.name !== filters.workType) return false;
-            return true;
-        });
-    }, [currentUpdate, filters]);
+        return applyDynamicFilters(currentUpdate.activities);
+    }, [currentUpdate, activeFilters]);
 
     /**
      * Memo: Get activities without dates (missing start or finish)
@@ -304,29 +593,38 @@ function CalendarScheduleViewer() {
     }, [filteredActivities]);
 
     /**
-     * Memo: Get unique work types
-     */
-    const workTypes = useMemo(() => {
-        if (!currentUpdate) return [];
-        const types = new Set(currentUpdate.activities.map(a => a.name));
-        return Array.from(types).sort();
-    }, [currentUpdate]);
-
-    /**
-     * Memo: Get activities for selected date
+     * Memo: Get activities for selected date (with search filter)
      */
     const selectedDateActivities = useMemo(() => {
         const dateKey = dateToString(selectedDate);
         const activities = activityMap[dateKey] || [];
 
-        return activities.filter(activity => {
-            if (filters.area !== 'all' && activity.area !== filters.area) return false;
-            if (filters.floor && activity.floor !== filters.floor) return false;
-            if (filters.zone && activity.zone !== filters.zone) return false;
-            if (filters.workType !== 'all' && activity.name !== filters.workType) return false;
-            return true;
-        });
-    }, [activityMap, selectedDate, filters]);
+        // Apply dynamic filters
+        let filteredActivities = applyDynamicFilters(activities);
+
+        // Apply day search filter
+        if (daySearchTerm.trim()) {
+            const searchLower = daySearchTerm.toLowerCase().trim();
+            filteredActivities = filteredActivities.filter(activity => {
+                // Search in multiple fields
+                const searchableFields = [
+                    activity.id,
+                    activity.name,
+                    activity.contractor,
+                    activity.area,
+                    activity.floor,
+                    activity.zone,
+                    activity.comments
+                ];
+
+                return searchableFields.some(field =>
+                    field && String(field).toLowerCase().includes(searchLower)
+                );
+            });
+        }
+
+        return filteredActivities;
+    }, [activityMap, selectedDate, activeFilters, daySearchTerm]);
 
     /**
      * Memo: Generate calendar days for current month
@@ -362,6 +660,210 @@ function CalendarScheduleViewer() {
     };
 
     /**
+     * Handler: Add new dynamic filter (multi-select)
+     */
+    const handleAddFilter = (column) => {
+        const uniqueValues = getUniqueValuesForColumn(column);
+        if (uniqueValues.length === 0) {
+            showToast(`No values available for ${column}`, 'error');
+            return;
+        }
+
+        const newFilter = {
+            id: Date.now(),
+            column,
+            values: [] // Start with no values selected (user will select)
+        };
+
+        setActiveFilters([...activeFilters, newFilter]);
+
+        // Auto-expand the newly added filter (accordion behavior)
+        setExpandedFilterId(newFilter.id);
+    };
+
+    /**
+     * Handler: Remove filter
+     */
+    const handleRemoveFilter = (filterId) => {
+        setActiveFilters(activeFilters.filter(f => f.id !== filterId));
+
+        // Clean up associated state
+        setFilterSearchTerms(prev => {
+            const newTerms = { ...prev };
+            delete newTerms[filterId];
+            return newTerms;
+        });
+
+        setLastClickedIndex(prev => {
+            const newIndices = { ...prev };
+            delete newIndices[filterId];
+            return newIndices;
+        });
+
+        // If removing the expanded filter, collapse it
+        if (expandedFilterId === filterId) {
+            setExpandedFilterId(null);
+        }
+    };
+
+    /**
+     * Handler: Update search term for a specific filter
+     */
+    const handleFilterSearchChange = (filterId, searchTerm) => {
+        setFilterSearchTerms(prev => ({
+            ...prev,
+            [filterId]: searchTerm
+        }));
+    };
+
+    /**
+     * Handler: Toggle filter value with Shift+Click range selection support
+     * visibleValues: the currently visible/filtered values array
+     */
+    const handleToggleFilterValue = (filterId, value, currentIndex, shiftKey, visibleValues) => {
+        const filter = activeFilters.find(f => f.id === filterId);
+        if (!filter) return;
+
+        const values = filter.values || [];
+
+        let newValues;
+
+        // Shift+Click: Select range between last clicked and current in the VISIBLE array
+        if (shiftKey && lastClickedIndex[filterId] !== undefined) {
+            const lastIdx = lastClickedIndex[filterId];
+            const startIdx = Math.min(lastIdx, currentIndex);
+            const endIdx = Math.max(lastIdx, currentIndex);
+
+            // Get all values in the range from the VISIBLE array
+            const rangeValues = visibleValues.slice(startIdx, endIdx + 1);
+
+            // Determine if we're selecting or deselecting based on current value
+            const isCurrentSelected = values.includes(value);
+
+            // If current is selected, deselect the range; otherwise, select the range
+            if (isCurrentSelected) {
+                // Deselect all values in range
+                newValues = values.filter(v => !rangeValues.includes(v));
+            } else {
+                // Select all values in range (add only new ones)
+                const valuesToAdd = rangeValues.filter(v => !values.includes(v));
+                newValues = [...values, ...valuesToAdd];
+            }
+        } else {
+            // Normal click: toggle single value
+            const isSelected = values.includes(value);
+            newValues = isSelected
+                ? values.filter(v => v !== value)
+                : [...values, value];
+        }
+
+        // Update filter values
+        setActiveFilters(activeFilters.map(f =>
+            f.id === filterId ? { ...f, values: newValues } : f
+        ));
+
+        // Always update last clicked index for next shift+click
+        setLastClickedIndex(prev => ({
+            ...prev,
+            [filterId]: currentIndex
+        }));
+    };
+
+    /**
+     * Handler: Select all values for a filter
+     */
+    const handleSelectAllFilterValues = (filterId) => {
+        setActiveFilters(activeFilters.map(f => {
+            if (f.id === filterId) {
+                const uniqueValues = getUniqueValuesForColumn(f.column);
+                return { ...f, values: [...uniqueValues] };
+            }
+            return f;
+        }));
+    };
+
+    /**
+     * Handler: Clear all values for a filter
+     */
+    const handleClearFilterValues = (filterId) => {
+        setActiveFilters(activeFilters.map(f => {
+            if (f.id === filterId) {
+                return { ...f, values: [] };
+            }
+            return f;
+        }));
+    };
+
+    /**
+     * Handler: Clear all filters
+     */
+    const handleClearAllFilters = () => {
+        setActiveFilters([]);
+    };
+
+    /**
+     * Handler: Save current filter layout with a name
+     */
+    const handleSaveFilterLayout = (layoutName) => {
+        const newLayout = {
+            id: Date.now().toString(),
+            name: layoutName,
+            timestamp: new Date().toISOString(),
+            filters: activeFilters.map(f => ({
+                id: f.id,
+                column: f.column,
+                values: [...(f.values || [])]
+            }))
+        };
+
+        const updatedLayouts = [...savedFilterLayouts, newLayout];
+        setSavedFilterLayouts(updatedLayouts);
+        localStorage.setItem('crownSchedule_filterLayouts', JSON.stringify(updatedLayouts));
+
+        showToast(`Filter layout "${layoutName}" saved successfully!`, 'success');
+    };
+
+    /**
+     * Handler: Load a saved filter layout
+     */
+    const handleLoadFilterLayout = (layout) => {
+        // Clear current filters and filter search terms
+        setFilterSearchTerms({});
+        setExpandedFilterId(null);
+
+        // Apply the saved filters
+        setActiveFilters(layout.filters.map(f => ({
+            id: Date.now().toString() + Math.random(), // New unique ID
+            column: f.column,
+            values: [...f.values]
+        })));
+
+        showToast(`Filter layout "${layout.name}" loaded successfully!`, 'success');
+    };
+
+    /**
+     * Handler: Delete a saved filter layout
+     */
+    const handleDeleteFilterLayout = (layoutId) => {
+        if (!confirm('Are you sure you want to delete this filter layout?')) return;
+
+        const updatedLayouts = savedFilterLayouts.filter(l => l.id !== layoutId);
+        setSavedFilterLayouts(updatedLayouts);
+        localStorage.setItem('crownSchedule_filterLayouts', JSON.stringify(updatedLayouts));
+
+        showToast('Filter layout deleted', 'success');
+    };
+
+    /**
+     * Handler: Save custom headers
+     */
+    const handleSaveCustomHeaders = (newHeaders) => {
+        setCustomHeaders(newHeaders);
+        localStorage.setItem('customHeaders', JSON.stringify(newHeaders));
+        showToast(`Custom headers saved successfully (${newHeaders.length} columns)`, 'success');
+    };
+
+    /**
      * Handler: Export data as JSON backup
      */
     const handleExportData = () => {
@@ -392,7 +894,7 @@ function CalendarScheduleViewer() {
     /**
      * Handler: Export to Excel with filters and sorting
      */
-    const handleExportToExcel = (filters, sortBy, sortOrder) => {
+    const handleExportToExcel = (filters, sortBy, sortOrder, selectedLayout = null) => {
         try {
             let activities = [...currentUpdate.activities];
 
@@ -401,7 +903,13 @@ function CalendarScheduleViewer() {
                 return;
             }
 
-            // STEP 1: Apply Filters
+            // STEP 1A: Apply Saved Layout Filters First (if selected)
+            if (selectedLayout && selectedLayout.filters && selectedLayout.filters.length > 0) {
+                activities = applyDynamicFilters(activities, selectedLayout.filters);
+                console.log(`Applied saved layout "${selectedLayout.name}": ${activities.length} activities remaining`);
+            }
+
+            // STEP 1B: Apply Traditional Export Filters
             if (filters.contractor) {
                 activities = activities.filter(a => a.contractor === filters.contractor);
             }
@@ -419,6 +927,37 @@ function CalendarScheduleViewer() {
                     a.name && a.name.toLowerCase().includes(filters.activityName.toLowerCase())
                 );
             }
+            // Date Range Filter (for 2-week/3-week look-ahead)
+            if (filters.dateRangeStart && filters.dateRangeEnd) {
+                const rangeStart = new Date(filters.dateRangeStart);
+                rangeStart.setHours(0, 0, 0, 0);
+                const rangeEnd = new Date(filters.dateRangeEnd);
+                rangeEnd.setHours(0, 0, 0, 0);
+
+                if (filters.includeOverlap) {
+                    // Bidirectional overlap: Include any activity that touches the range
+                    // Activity overlaps if: (start <= rangeEnd) && (finish >= rangeStart)
+                    activities = activities.filter(a => {
+                        if (!a.start || !a.finish) return false; // Exclude activities without dates
+
+                        const activityStart = new Date(a.start);
+                        activityStart.setHours(0, 0, 0, 0);
+                        const activityFinish = new Date(a.finish);
+                        activityFinish.setHours(0, 0, 0, 0);
+
+                        // Check for overlap
+                        return activityStart <= rangeEnd && activityFinish >= rangeStart;
+                    });
+                } else {
+                    // Original behavior: Only activities that START in the range
+                    activities = activities.filter(a => {
+                        if (!a.start) return false;
+                        const activityStart = new Date(a.start);
+                        activityStart.setHours(0, 0, 0, 0);
+                        return activityStart >= rangeStart && activityStart <= rangeEnd;
+                    });
+                }
+            }
 
             if (activities.length === 0) {
                 showToast('No activities match the filters', 'error');
@@ -430,19 +969,28 @@ function CalendarScheduleViewer() {
                 let aVal = a[sortBy] || '';
                 let bVal = b[sortBy] || '';
 
-                // For date fields, compare as dates (format: YYYY-MM-DD)
+                // For date fields, compare as actual Date objects
                 const dateFields = ['start', 'finish', 'actual_start', 'actual_finish'];
                 if (dateFields.includes(sortBy)) {
                     // Handle empty dates (push to end)
                     if (!aVal && !bVal) return 0;
-                    if (!aVal) return 1;  // Empty dates go to end
-                    if (!bVal) return -1;
+                    if (!aVal) return sortOrder === 'asc' ? 1 : -1;  // Empty dates go to end
+                    if (!bVal) return sortOrder === 'asc' ? -1 : 1;
 
-                    // Compare dates as YYYY-MM-DD strings (works correctly)
+                    // Convert to Date objects for proper comparison
+                    const dateA = new Date(aVal);
+                    const dateB = new Date(bVal);
+
+                    // Handle invalid dates
+                    if (isNaN(dateA.getTime()) && isNaN(dateB.getTime())) return 0;
+                    if (isNaN(dateA.getTime())) return sortOrder === 'asc' ? 1 : -1;
+                    if (isNaN(dateB.getTime())) return sortOrder === 'asc' ? -1 : 1;
+
+                    // Compare as timestamps
                     if (sortOrder === 'asc') {
-                        return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+                        return dateA.getTime() - dateB.getTime();
                     } else {
-                        return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
+                        return dateB.getTime() - dateA.getTime();
                     }
                 }
 
@@ -457,29 +1005,92 @@ function CalendarScheduleViewer() {
                 }
             });
 
+            // Helper function: Calculate Range Status for overlap analysis
+            const getRangeStatus = (activity) => {
+                if (!filters.includeOverlap || !filters.dateRangeStart || !filters.dateRangeEnd) {
+                    return ''; // No range status if overlap is disabled
+                }
+
+                const rangeStart = new Date(filters.dateRangeStart);
+                rangeStart.setHours(0, 0, 0, 0);
+                const rangeEnd = new Date(filters.dateRangeEnd);
+                rangeEnd.setHours(0, 0, 0, 0);
+
+                const activityStart = new Date(activity.start);
+                activityStart.setHours(0, 0, 0, 0);
+                const activityFinish = new Date(activity.finish);
+                activityFinish.setHours(0, 0, 0, 0);
+
+                const startsInRange = activityStart >= rangeStart && activityStart <= rangeEnd;
+                const endsInRange = activityFinish >= rangeStart && activityFinish <= rangeEnd;
+
+                if (startsInRange && endsInRange) {
+                    return 'Within range';
+                } else if (startsInRange && !endsInRange) {
+                    return 'Starts in range';
+                } else if (!startsInRange && endsInRange) {
+                    return 'Ends in range';
+                } else {
+                    return 'Ongoing (crosses range)';
+                }
+            };
+
+            // Helper function: Calculate days between two dates
+            const calculateDaysDifference = (date1, date2) => {
+                if (!date1 || !date2) return '';
+                const d1 = new Date(date1);
+                const d2 = new Date(date2);
+                if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return '';
+
+                const diffTime = d2.getTime() - d1.getTime();
+                const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+                // Format with + or - sign
+                if (diffDays > 0) return `+${diffDays}`;
+                if (diffDays < 0) return `${diffDays}`;
+                return '0';
+            };
+
             // Prepare data for Excel with all fields
-            const excelData = activities.map(activity => ({
-                'ID': activity.id || '',
-                'Activity Name': activity.name || '',
-                'Contractor': activity.contractor || '',
-                'Area': customAreaConfig[activity.area]?.name || activity.area || '',
-                'Floor': customIdPatternConfig.floors[activity.floor] || activity.floor || '',
-                'Zone': customIdPatternConfig.zones[activity.zone] || activity.zone || '',
-                'Start Date': activity.start || '',
-                'Finish Date': activity.finish || '',
-                'Original Duration': activity.original_duration || '',
-                'Remaining Duration': activity.rem_duration || '',
-                'Actual Start': activity.actual_start || '',
-                'Actual Finish': activity.actual_finish || '',
-                'Percent Complete': activity.percent_complete || '0',
-                'Comments': activity.comments || ''
-            }));
+            const excelData = activities.map(activity => {
+                // Calculate variances
+                const startVariance = calculateDaysDifference(activity.start, activity.actual_start);
+                const finishVariance = calculateDaysDifference(activity.finish, activity.actual_finish);
+                const actualDuration = calculateDaysDifference(activity.actual_start, activity.actual_finish);
+
+                const baseData = {
+                    'ID': activity.id || '',
+                    'Activity Name': activity.name || '',
+                    'Contractor': activity.contractor || '',
+                    'Area': customAreaConfig[activity.area]?.name || activity.area || '',
+                    'Floor': customIdPatternConfig.floors[activity.floor] || activity.floor || '',
+                    'Zone': customIdPatternConfig.zones[activity.zone] || activity.zone || '',
+                    'Start Date': activity.start || '',
+                    'Finish Date': activity.finish || '',
+                    'Original Duration': activity.original_duration || '',
+                    'Remaining Duration': activity.rem_duration || '',
+                    'Actual Start': activity.actual_start || '',
+                    'Actual Finish': activity.actual_finish || '',
+                    'Start Variance (days)': startVariance,
+                    'Finish Variance (days)': finishVariance,
+                    'Actual Duration (days)': actualDuration,
+                    'Percent Complete': activity.percent_complete || '0',
+                    'Comments': activity.comments || ''
+                };
+
+                // Add Range Status column if overlap is enabled (Saber es Poder)
+                if (filters.includeOverlap && filters.dateRangeStart && filters.dateRangeEnd) {
+                    baseData['Range Status'] = getRangeStatus(activity);
+                }
+
+                return baseData;
+            });
 
             // Create worksheet
             const ws = XLSX.utils.json_to_sheet(excelData);
 
             // Set column widths for 11x17 landscape (optimal widths)
-            ws['!cols'] = [
+            const columnWidths = [
                 { wch: 15 },  // ID
                 { wch: 35 },  // Activity Name
                 { wch: 15 },  // Contractor
@@ -492,9 +1103,19 @@ function CalendarScheduleViewer() {
                 { wch: 12 },  // Remaining Duration
                 { wch: 12 },  // Actual Start
                 { wch: 12 },  // Actual Finish
+                { wch: 14 },  // Start Variance (days)
+                { wch: 14 },  // Finish Variance (days)
+                { wch: 14 },  // Actual Duration (days)
                 { wch: 12 },  // Percent Complete
                 { wch: 25 }   // Comments
             ];
+
+            // Add Range Status column width if overlap is enabled
+            if (filters.includeOverlap && filters.dateRangeStart && filters.dateRangeEnd) {
+                columnWidths.push({ wch: 25 }); // Range Status
+            }
+
+            ws['!cols'] = columnWidths;
 
             // Create workbook
             const wb = XLSX.utils.book_new();
@@ -634,48 +1255,60 @@ function CalendarScheduleViewer() {
                             {currentUpdate?.name} | {currentUpdate?.activities.length || 0} Activities
                         </p>
                     </div>
-                    <div className="flex gap-4 items-center">
-                        <div className="flex gap-2">
-                            <button
-                                onClick={() => setShowBulkContractorModal(true)}
-                                className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition text-sm font-semibold"
-                                title="Assign contractor to multiple activities at once"
-                            >
-                                <i className="fas fa-users-cog mr-2"></i>
-                                Assign Contractor
-                            </button>
-                            <button
-                                onClick={() => setShowConfigureCodesModal(true)}
-                                className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition text-sm font-semibold"
-                                title="Configure what each Activity ID code means in your project"
-                            >
-                                <i className="fas fa-cog mr-2"></i>
-                                Configure Codes
-                            </button>
-                            <button
-                                onClick={() => setShowExportModal(true)}
-                                className="px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition text-sm font-semibold"
-                                title="Export current update to Excel with filters and sorting"
-                            >
-                                <i className="fas fa-file-excel mr-2"></i>
-                                Export to Excel
-                            </button>
-                            <button
-                                onClick={handleClearAllData}
-                                className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition text-sm"
-                                title="Clear all data"
-                            >
-                                <i className="fas fa-trash-alt"></i>
-                            </button>
-                        </div>
-                        <div className="text-center border-l border-gray-300 pl-4">
-                            <div className="text-sm text-gray-500">TODAY</div>
-                            <div className="text-2xl font-bold text-amber-600">{TODAY.getDate()}</div>
-                            <div className="text-xs text-gray-500">{TODAY.toLocaleDateString('en-US', { month: 'short' })}</div>
-                        </div>
-                        <div className="text-center px-4 border-l border-gray-300">
-                            <div className="text-sm text-gray-500">Total</div>
-                            <div className="text-2xl font-bold text-slate-600">{filteredActivities.length}</div>
+                    <div className="flex flex-wrap gap-3 items-center">
+                        {/* Responsive Buttons - Wrap on small screens, show icons only on mobile */}
+                        <button
+                            onClick={() => setShowBulkContractorModal(true)}
+                            className="flex items-center gap-2 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition text-sm font-semibold"
+                            title="Assign contractor to multiple activities at once"
+                        >
+                            <i className="fas fa-users-cog"></i>
+                            <span className="hidden sm:inline">Assign Contractor</span>
+                        </button>
+                        <button
+                            onClick={() => setShowConfigureCodesModal(true)}
+                            className="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition text-sm font-semibold"
+                            title="Configure what each Activity ID code means in your project"
+                        >
+                            <i className="fas fa-cog"></i>
+                            <span className="hidden sm:inline">Configure Codes</span>
+                        </button>
+                        <button
+                            onClick={() => setShowExportModal(true)}
+                            className="flex items-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition text-sm font-semibold"
+                            title="Export current update to Excel with filters and sorting"
+                        >
+                            <i className="fas fa-file-excel"></i>
+                            <span className="hidden sm:inline">Export to Excel</span>
+                        </button>
+                        <button
+                            onClick={() => setShowComparisonModal(true)}
+                            className="flex items-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition text-sm font-semibold"
+                            title="Compare two schedule updates to analyze variance and delays"
+                        >
+                            <i className="fas fa-chart-line"></i>
+                            <span className="hidden sm:inline">Schedule Comparison</span>
+                        </button>
+                        <button
+                            onClick={handleClearAllData}
+                            className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition text-sm"
+                            title="Clear all data"
+                        >
+                            <i className="fas fa-trash-alt"></i>
+                        </button>
+
+                        {/* Stats - Stack on small screens */}
+                        <div className="flex gap-4 ml-auto border-l border-gray-300 pl-4">
+                            <div className="text-center">
+                                <div className="text-xs text-gray-500">TODAY</div>
+                                <div className="text-xl font-bold text-amber-600">{TODAY.getDate()}</div>
+                                <div className="text-xs text-gray-500">{TODAY.toLocaleDateString('en-US', { month: 'short' })}</div>
+                            </div>
+                            <div className="text-center border-l border-gray-300 pl-4">
+                                <div className="text-xs text-gray-500">Total</div>
+                                <div className="text-xl font-bold text-slate-600">{filteredActivities.length}</div>
+                                <div className="text-xs text-gray-500">activities</div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -683,139 +1316,491 @@ function CalendarScheduleViewer() {
 
             {/* Update Management Bar */}
             <div className="glass rounded-2xl p-6 mb-6 shadow-xl">
-                <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2">
-                        <i className="fas fa-sync-alt text-slate-600"></i>
-                        <span className="font-semibold text-gray-700">Update:</span>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                    {/* Update Selector Row */}
+                    <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-2">
+                            <i className="fas fa-sync-alt text-slate-600"></i>
+                            <span className="font-semibold text-gray-700">Update:</span>
+                        </div>
+
+                        <select
+                            value={currentUpdateId}
+                            onChange={(e) => setCurrentUpdateId(parseInt(e.target.value))}
+                            className="px-4 py-2 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none font-medium"
+                        >
+                            {updates.map(update => (
+                                <option key={update.id} value={update.id}>
+                                    {update.name} ({update.activities.length} activities)
+                                </option>
+                            ))}
+                        </select>
+
+                        <button
+                            onClick={() => setShowRenameModal(true)}
+                            className="px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition"
+                            title="Rename current update"
+                        >
+                            <i className="fas fa-edit"></i>
+                        </button>
+
+                        <button
+                            onClick={() => setShowDeleteModal(true)}
+                            className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition"
+                            title="Delete current update"
+                        >
+                            <i className="fas fa-trash"></i>
+                        </button>
                     </div>
 
-                    <select
-                        value={currentUpdateId}
-                        onChange={(e) => setCurrentUpdateId(parseInt(e.target.value))}
-                        className="px-4 py-2 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none font-medium"
-                    >
-                        {updates.map(update => (
-                            <option key={update.id} value={update.id}>
-                                {update.name} ({update.activities.length} activities)
-                            </option>
-                        ))}
-                    </select>
+                    {/* Action Buttons Row - Wrap and stack on small screens */}
+                    <div className="flex flex-wrap gap-2 sm:ml-auto">
+                        <button
+                            onClick={handleCreateNewUpdate}
+                            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition font-medium"
+                        >
+                            <i className="fas fa-plus"></i>
+                            <span className="hidden sm:inline">New Update</span>
+                        </button>
 
-                    <button
-                        onClick={() => setShowRenameModal(true)}
-                        className="px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition"
-                        title="Rename current update"
-                    >
-                        <i className="fas fa-edit"></i>
-                    </button>
-
-                    <button
-                        onClick={() => setShowDeleteModal(true)}
-                        className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-600 rounded-lg transition"
-                        title="Delete current update"
-                    >
-                        <i className="fas fa-trash"></i>
-                    </button>
-
-                    <button
-                        onClick={handleCreateNewUpdate}
-                        className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition font-medium"
-                    >
-                        <i className="fas fa-plus mr-2"></i>
-                        New Update
-                    </button>
-
-                    <div className="ml-auto flex gap-3">
                         <button
                             onClick={() => setShowImportWizard(true)}
-                            className="px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition font-medium"
+                            className="flex items-center gap-2 px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition font-medium"
                         >
-                            <i className="fas fa-file-import mr-2"></i>
-                            Import Excel
+                            <i className="fas fa-file-import"></i>
+                            <span className="hidden sm:inline">Import Excel</span>
                         </button>
 
                         <button
                             onClick={() => setShowManualEntry(true)}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium"
+                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium"
                         >
-                            <i className="fas fa-plus-circle mr-2"></i>
-                            Manual Entry
+                            <i className="fas fa-plus-circle"></i>
+                            <span className="hidden sm:inline">Manual Entry</span>
                         </button>
                     </div>
                 </div>
             </div>
 
-            {/* Filters */}
+            {/* Dynamic Filters */}
             <div className="glass rounded-2xl p-6 mb-6 shadow-xl">
-                <div className="flex items-center gap-6">
-                    <div className="flex items-center gap-2">
-                        <i className="fas fa-filter text-slate-600"></i>
-                        <span className="font-semibold text-gray-700">Filters:</span>
+                <div className="space-y-4">
+                    {/* Activity Count - Shows filtered results */}
+                    {currentUpdate && (
+                        <div className="bg-gray-100 border border-gray-300 rounded px-3 py-2">
+                            <div className="flex items-center gap-2">
+                                <i className="fas fa-eye text-gray-600 text-sm"></i>
+                                <span className="text-sm text-gray-700">
+                                    Viewing{' '}
+                                    <span className="font-semibold text-gray-900">{filteredActivities.length}</span>
+                                    {activeFilters.length > 0 && (
+                                        <>
+                                            {' '}of{' '}
+                                            <span className="font-semibold text-gray-900">{currentUpdate.activities.length}</span>
+                                        </>
+                                    )}
+                                    {' '}activities
+                                    {activeFilters.length > 0 && (
+                                        <span className="text-xs text-gray-500 ml-1">
+                                            ({Math.round((filteredActivities.length / currentUpdate.activities.length) * 100)}%)
+                                        </span>
+                                    )}
+                                </span>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Header */}
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                            <i className="fas fa-filter text-slate-600"></i>
+                            <span className="font-semibold text-gray-700">Filters:</span>
+                            <span className="text-sm text-gray-500">
+                                ({activeFilters.length} active)
+                            </span>
+                        </div>
+
+                        <div className="flex flex-wrap gap-2">
+                            {/* Add Filter Dropdown */}
+                            <select
+                                onChange={(e) => {
+                                    if (e.target.value) {
+                                        handleAddFilter(e.target.value);
+                                        e.target.value = ''; // Reset
+                                    }
+                                }}
+                                className="px-3 py-1.5 rounded-lg border-2 border-blue-300 focus:border-blue-500 focus:outline-none text-sm bg-white"
+                                disabled={availableColumns.length === 0}
+                            >
+                                <option value="">+ Add Filter</option>
+                                {availableColumns.map(col => (
+                                    <option key={col.value} value={col.value}>
+                                        {col.label}
+                                    </option>
+                                ))}
+                            </select>
+
+                            {/* Save Layout Button */}
+                            {activeFilters.length > 0 && (
+                                <button
+                                    onClick={() => setShowSaveLayoutModal(true)}
+                                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition"
+                                    title="Save current filter layout for quick reuse"
+                                >
+                                    <i className="fas fa-save mr-2"></i>
+                                    Save Layout
+                                </button>
+                            )}
+
+                            {/* Load Layout Dropdown */}
+                            {savedFilterLayouts.length > 0 && (
+                                <select
+                                    onChange={(e) => {
+                                        if (e.target.value) {
+                                            const layout = savedFilterLayouts.find(l => l.id === e.target.value);
+                                            if (layout) {
+                                                handleLoadFilterLayout(layout);
+                                            }
+                                            e.target.value = ''; // Reset
+                                        }
+                                    }}
+                                    className="px-3 py-1.5 rounded-lg border-2 border-green-300 focus:border-green-500 focus:outline-none text-sm bg-white"
+                                >
+                                    <option value="">📁 Load Layout</option>
+                                    {savedFilterLayouts.map(layout => (
+                                        <option key={layout.id} value={layout.id}>
+                                            {layout.name} ({layout.filters.length} filters)
+                                        </option>
+                                    ))}
+                                </select>
+                            )}
+
+                            {/* Clear All Button */}
+                            {activeFilters.length > 0 && (
+                                <button
+                                    onClick={handleClearAllFilters}
+                                    className="px-4 py-1.5 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm font-medium transition"
+                                >
+                                    <i className="fas fa-times mr-2"></i>
+                                    Clear All
+                                </button>
+                            )}
+
+                            {/* Manage Layouts Button */}
+                            {savedFilterLayouts.length > 0 && (
+                                <button
+                                    onClick={() => {
+                                        // Show simple alert with layouts list
+                                        const layoutsList = savedFilterLayouts.map((layout, idx) =>
+                                            `${idx + 1}. ${layout.name} (${layout.filters.length} filters)`
+                                        ).join('\n');
+                                        if (confirm(`Saved Layouts:\n\n${layoutsList}\n\nClick OK to manage layouts (delete)`)) {
+                                            const layoutToDelete = prompt('Enter layout number to delete (1, 2, etc.):');
+                                            const index = parseInt(layoutToDelete) - 1;
+                                            if (index >= 0 && index < savedFilterLayouts.length) {
+                                                handleDeleteFilterLayout(savedFilterLayouts[index].id);
+                                            }
+                                        }
+                                    }}
+                                    className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm transition"
+                                    title="Manage saved layouts"
+                                >
+                                    <i className="fas fa-cog"></i>
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Assign to Contractor/Sub - Collapsible Accordion */}
+                        {activeFilters.length > 0 && filteredActivities.length > 0 && (
+                            <div className="mt-2 bg-gray-50 border border-gray-300 rounded p-2">
+                                {/* Clickable Header - Accordion */}
+                                <div
+                                    className="flex items-center justify-between cursor-pointer hover:bg-gray-100 -m-2 p-2 rounded transition"
+                                    onClick={() => setIsAssignExpanded(!isAssignExpanded)}
+                                >
+                                    <div className="flex items-center gap-1.5">
+                                        {/* Expand/Collapse Icon */}
+                                        <i className={`fas fa-chevron-${isAssignExpanded ? 'down' : 'right'} text-gray-600 text-xs`}></i>
+                                        <i className="fas fa-user-check text-gray-700 text-sm"></i>
+                                        <span className="text-xs font-semibold text-gray-800">
+                                            Assign ({filteredActivities.length})
+                                        </span>
+                                    </div>
+                                </div>
+
+                                {/* Expanded Content */}
+                                {isAssignExpanded && (
+                                    <div className="mt-2 space-y-2">
+                                        {/* New Contractor Input */}
+                                        <div>
+                                            <input
+                                                type="text"
+                                                placeholder="New contractor (press Enter)..."
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter' && e.target.value.trim()) {
+                                                        const newContractor = e.target.value.trim();
+                                                        const confirmed = confirm(
+                                                            `Assign "${newContractor}" to ${filteredActivities.length} filtered activities?`
+                                                        );
+                                                        if (confirmed) {
+                                                            const currentUpdate = updates.find(u => u.id === currentUpdateId);
+                                                            if (!currentUpdate) return;
+
+                                                            const updatedActivities = currentUpdate.activities.map(activity => {
+                                                                const isFiltered = filteredActivities.some(fa => fa.id === activity.id);
+                                                                if (isFiltered) {
+                                                                    return { ...activity, contractor: newContractor };
+                                                                }
+                                                                return activity;
+                                                            });
+
+                                                            const updatedUpdates = updates.map(u =>
+                                                                u.id === currentUpdateId
+                                                                    ? { ...u, activities: updatedActivities }
+                                                                    : u
+                                                            );
+
+                                                            setUpdates(updatedUpdates);
+                                                            showToast(
+                                                                `✅ Assigned "${newContractor}" to ${filteredActivities.length} activities`,
+                                                                'success'
+                                                            );
+                                                            e.target.value = '';
+                                                        }
+                                                    }
+                                                }}
+                                                className="w-full px-2 py-1 border border-gray-300 rounded text-xs focus:border-gray-500 focus:outline-none"
+                                            />
+                                        </div>
+
+                                        {/* Existing Contractors */}
+                                        {(() => {
+                                            const existingContractors = getUniqueValuesForColumn('contractor').filter(c => c);
+                                            if (existingContractors.length > 0) {
+                                                return (
+                                                    <div>
+                                                        <div className="text-xs text-gray-600 mb-1 font-medium">Or select existing:</div>
+                                                        <div className="max-h-20 overflow-y-auto space-y-0.5">
+                                                            {existingContractors.map(contractor => (
+                                                                <label
+                                                                    key={contractor}
+                                                                    className="flex items-center gap-1.5 px-1.5 py-0.5 hover:bg-gray-200 rounded cursor-pointer transition"
+                                                                >
+                                                                    <input
+                                                                        type="radio"
+                                                                        name="contractor-assign"
+                                                                        onChange={(e) => {
+                                                                            if (e.target.checked) {
+                                                                                const confirmed = confirm(
+                                                                                    `Assign "${contractor}" to ${filteredActivities.length} filtered activities?`
+                                                                                );
+                                                                                if (confirmed) {
+                                                                                    const currentUpdate = updates.find(u => u.id === currentUpdateId);
+                                                                                    if (!currentUpdate) return;
+
+                                                                                    const updatedActivities = currentUpdate.activities.map(activity => {
+                                                                                        const isFiltered = filteredActivities.some(fa => fa.id === activity.id);
+                                                                                        if (isFiltered) {
+                                                                                            return { ...activity, contractor };
+                                                                                        }
+                                                                                        return activity;
+                                                                                    });
+
+                                                                                    const updatedUpdates = updates.map(u =>
+                                                                                        u.id === currentUpdateId
+                                                                                            ? { ...u, activities: updatedActivities }
+                                                                                            : u
+                                                                                    );
+
+                                                                                    setUpdates(updatedUpdates);
+                                                                                    showToast(
+                                                                                        `✅ Assigned "${contractor}" to ${filteredActivities.length} activities`,
+                                                                                        'success'
+                                                                                    );
+                                                                                    e.target.checked = false; // Reset
+                                                                                } else {
+                                                                                    e.target.checked = false; // Cancel
+                                                                                }
+                                                                            }
+                                                                        }}
+                                                                        className="w-3 h-3 text-gray-600"
+                                                                    />
+                                                                    <span className="text-xs text-gray-700 truncate flex-1">
+                                                                        {contractor}
+                                                                    </span>
+                                                                </label>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            }
+                                            return null;
+                                        })()}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
 
-                    <div className="flex items-center gap-2">
-                        <label className="text-sm text-gray-600">Area:</label>
-                        <select
-                            value={filters.area}
-                            onChange={(e) => setFilters({...filters, area: e.target.value})}
-                            className="px-3 py-1.5 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none text-sm"
-                        >
-                            <option value="all">All</option>
-                            {Object.keys(areaConfig).map(area => (
-                                <option key={area} value={area}>{area}</option>
-                            ))}
-                        </select>
-                    </div>
+                    {/* Active Filters List - Compact Multi-Select */}
+                    {activeFilters.length > 0 && (
+                        <div className="space-y-2">
+                            {activeFilters.map(filter => {
+                                const columnLabel = availableColumns.find(c => c.value === filter.column)?.label || filter.column;
+                                const allUniqueValues = getUniqueValuesForColumn(filter.column);
 
-                    <div className="flex items-center gap-2">
-                        <label className="text-sm text-gray-600">Floor:</label>
-                        <select
-                            value={filters.floor || 'all'}
-                            onChange={(e) => setFilters({...filters, floor: e.target.value === 'all' ? '' : e.target.value})}
-                            className="px-3 py-1.5 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none text-sm"
-                        >
-                            <option value="all">All</option>
-                            {[...new Set(currentUpdate?.activities.map(a => a.floor).filter(Boolean))].sort().map(floor => (
-                                <option key={floor} value={floor}>{floor}</option>
-                            ))}
-                        </select>
-                    </div>
+                                // Filter values based on search term
+                                const searchTerm = filterSearchTerms[filter.id] || '';
+                                const uniqueValues = searchTerm
+                                    ? allUniqueValues.filter(val =>
+                                        String(val).toLowerCase().includes(searchTerm.toLowerCase())
+                                    )
+                                    : allUniqueValues;
 
-                    <div className="flex items-center gap-2">
-                        <label className="text-sm text-gray-600">Zone:</label>
-                        <select
-                            value={filters.zone || 'all'}
-                            onChange={(e) => setFilters({...filters, zone: e.target.value === 'all' ? '' : e.target.value})}
-                            className="px-3 py-1.5 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none text-sm"
-                        >
-                            <option value="all">All</option>
-                            {[...new Set(currentUpdate?.activities.map(a => a.zone).filter(Boolean))].sort().map(zone => (
-                                <option key={zone} value={zone}>{zone}</option>
-                            ))}
-                        </select>
-                    </div>
+                                const selectedCount = filter.values?.length || 0;
+                                const isExpanded = expandedFilterId === filter.id;
 
-                    <div className="flex items-center gap-2">
-                        <label className="text-sm text-gray-600">Work Type:</label>
-                        <select
-                            value={filters.workType}
-                            onChange={(e) => setFilters({...filters, workType: e.target.value})}
-                            className="px-3 py-1.5 rounded-lg border-2 border-gray-300 focus:border-slate-500 focus:outline-none text-sm"
-                        >
-                            <option value="all">All</option>
-                            {workTypes.map(type => (
-                                <option key={type} value={type}>{type}</option>
-                            ))}
-                        </select>
-                    </div>
+                                return (
+                                    <div
+                                        key={filter.id}
+                                        className="bg-gray-50 border border-gray-300 rounded p-2"
+                                    >
+                                        {/* Compact Clickable Header - Accordion */}
+                                        <div
+                                            className="flex items-center justify-between cursor-pointer hover:bg-gray-100 -m-2 p-2 rounded transition"
+                                            onClick={() => setExpandedFilterId(isExpanded ? null : filter.id)}
+                                        >
+                                            <div className="flex items-center gap-1.5">
+                                                {/* Expand/Collapse Icon */}
+                                                <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} text-gray-600 text-xs`}></i>
 
-                    <button
-                        onClick={() => setFilters({ area: 'all', floor: '', zone: '', workType: 'all' })}
-                        className="ml-auto px-4 py-1.5 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm font-medium transition"
-                    >
-                        <i className="fas fa-times mr-2"></i>
-                        Clear
-                    </button>
+                                                <span className="text-xs font-semibold text-gray-800">
+                                                    {columnLabel}
+                                                </span>
+                                                <span className="px-1.5 py-0.5 bg-gray-200 text-gray-700 rounded-full text-xs font-medium">
+                                                    {selectedCount}
+                                                </span>
+                                            </div>
+
+                                            {/* Remove Filter Button */}
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation(); // Prevent accordion toggle
+                                                    handleRemoveFilter(filter.id);
+                                                }}
+                                                className="text-red-600 hover:text-red-700 transition"
+                                                title="Remove filter"
+                                            >
+                                                <i className="fas fa-trash text-xs"></i>
+                                            </button>
+                                        </div>
+
+                                        {/* Filter Content - Only shown when expanded (Accordion) */}
+                                        {isExpanded && (
+                                            <div className="mt-2">
+                                                {/* Compact Buttons */}
+                                                <div className="flex gap-1.5 mb-1.5">
+                                            <button
+                                                onClick={() => {
+                                                    setActiveFilters(activeFilters.map(f => {
+                                                        if (f.id === filter.id) {
+                                                            const currentValues = f.values || [];
+                                                            const newValues = [...new Set([...currentValues, ...uniqueValues])];
+                                                            return { ...f, values: newValues };
+                                                        }
+                                                        return f;
+                                                    }));
+                                                }}
+                                                className="px-2 py-0.5 bg-green-100 hover:bg-green-200 text-green-700 rounded text-xs transition"
+                                            >
+                                                <i className="fas fa-check-double mr-1"></i>
+                                                All {searchTerm && `(${uniqueValues.length})`}
+                                            </button>
+                                            <button
+                                                onClick={() => handleClearFilterValues(filter.id)}
+                                                className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded text-xs transition"
+                                            >
+                                                <i className="fas fa-times mr-1"></i>
+                                                Clear
+                                            </button>
+                                        </div>
+
+                                        {/* Compact Search */}
+                                        <div className="mb-1.5">
+                                            <div className="relative">
+                                                <i className="fas fa-search absolute left-2 top-1/2 transform -translate-y-1/2 text-gray-400" style={{fontSize: '10px'}}></i>
+                                                <input
+                                                    type="text"
+                                                    placeholder={`Search ${allUniqueValues.length}...`}
+                                                    value={searchTerm}
+                                                    onChange={(e) => handleFilterSearchChange(filter.id, e.target.value)}
+                                                    className="w-full pl-7 pr-6 py-1 border border-gray-300 rounded focus:border-blue-500 focus:outline-none text-xs"
+                                                />
+                                                {searchTerm && (
+                                                    <button
+                                                        onClick={() => handleFilterSearchChange(filter.id, '')}
+                                                        className="absolute right-1.5 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                                        title="Clear"
+                                                    >
+                                                        <i className="fas fa-times" style={{fontSize: '9px'}}></i>
+                                                    </button>
+                                                )}
+                                            </div>
+                                            {searchTerm && (
+                                                <p className="text-xs text-gray-600 mt-0.5">
+                                                    {uniqueValues.length} of {allUniqueValues.length}
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        {/* Compact Checkboxes */}
+                                        <div className="max-h-32 overflow-y-auto space-y-0.5">
+                                            {uniqueValues.length === 0 ? (
+                                                <div className="text-center py-2 text-gray-500">
+                                                    <i className="fas fa-search text-lg mb-1"></i>
+                                                    <p className="text-xs">No results</p>
+                                                </div>
+                                            ) : (
+                                                uniqueValues.map((value, index) => {
+                                                    const isChecked = filter.values?.includes(value) || false;
+
+                                                    return (
+                                                        <label
+                                                            key={value}
+                                                            className="flex items-center gap-1.5 px-1.5 py-1 hover:bg-blue-100 rounded cursor-pointer transition"
+                                                        >
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={isChecked}
+                                                                onClick={(e) => {
+                                                                    handleToggleFilterValue(filter.id, value, index, e.shiftKey, uniqueValues);
+                                                                }}
+                                                                onChange={() => {}}
+                                                                className="w-3.5 h-3.5 text-blue-600 rounded"
+                                                            />
+                                                            <span className="text-xs text-gray-700 flex-1 truncate" title={value}>
+                                                                {filter.column === 'marker' ? formatMarkerName(value) : value}
+                                                            </span>
+                                                        </label>
+                                                    );
+                                                })
+                                            )}
+                                        </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {/* Empty State */}
+                    {activeFilters.length === 0 && (
+                        <div className="text-center py-4 text-gray-500 text-sm">
+                            <i className="fas fa-info-circle mr-2"></i>
+                            No filters active. Click "+ Add Filter" to filter activities by any column.
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -874,30 +1859,69 @@ function CalendarScheduleViewer() {
                                 const allDayActivities = activityMap[dateKey] || [];
 
                                 // Apply filters to day activities (for dots)
-                                const dayActivities = allDayActivities.filter(activity => {
-                                    if (filters.area !== 'all' && activity.area !== filters.area) return false;
-                                    if (filters.floor && activity.floor !== filters.floor) return false;
-                                    if (filters.zone && activity.zone !== filters.zone) return false;
-                                    if (filters.workType !== 'all' && activity.name !== filters.workType) return false;
-                                    return true;
-                                });
+                                const dayActivities = applyDynamicFilters(allDayActivities);
 
                                 const hasActivities = dayActivities.length > 0;
                                 const isToday = date.toDateString() === TODAY.toDateString();
                                 const isSelected = date.toDateString() === selectedDate.toDateString();
+
+                                // Check for markers on this specific day
+                                const dayMarkers = allDayActivities
+                                    .filter(act => {
+                                        if (!act.marker || act.marker.type === 'none') return false;
+
+                                        // Check if this day matches the marker's target date
+                                        const markerDate = act.marker.applyTo === 'start' ? act.start : act.finish;
+
+                                        // Only show marker if this day matches the marker's target date
+                                        return markerDate === dateKey;
+                                    })
+                                    .map(act => ({
+                                        ...act.marker,
+                                        activity: act
+                                    }));
+
+                                // Marker type configurations
+                                const markerConfig = {
+                                    milestone: { icon: 'fas fa-gem', color: '#f59e0b' },
+                                    critical: { icon: 'fas fa-exclamation-triangle', color: '#ef4444' },
+                                    inspection: { icon: 'fas fa-clipboard-check', color: '#10b981' },
+                                    deliverable: { icon: 'fas fa-flag-checkered', color: '#3b82f6' },
+                                    deadline: { icon: 'fas fa-clock', color: '#f97316' }
+                                };
 
                                 return (
                                     <div
                                         key={dateKey}
                                         onClick={() => setSelectedDate(date)}
                                         className={`
-                                            calendar-day aspect-square p-2 rounded-lg text-center
+                                            calendar-day aspect-square p-2 rounded-lg text-center relative
                                             ${isToday ? 'today' : ''}
                                             ${isSelected ? 'selected' : 'bg-white'}
                                             ${hasActivities && !isToday && !isSelected ? 'has-activities' : ''}
                                         `}
                                     >
+                                        {/* Day number */}
                                         <div className="font-semibold">{date.getDate()}</div>
+
+                                        {/* Markers - displayed prominently */}
+                                        {dayMarkers.length > 0 && (
+                                            <div className="flex justify-center items-center gap-1 mt-1">
+                                                {dayMarkers.slice(0, 2).map((marker, i) => (
+                                                    <i
+                                                        key={i}
+                                                        className={`${markerConfig[marker.type]?.icon || ''} text-sm`}
+                                                        style={{
+                                                            color: markerConfig[marker.type]?.color || '#000',
+                                                            filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.3))'
+                                                        }}
+                                                        title={`${marker.activity.name} - ${marker.type}`}
+                                                    ></i>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        {/* Activity dots */}
                                         {hasActivities && (
                                             <div className="mt-1">
                                                 {dayActivities.slice(0, 3).map((act, i) => (
@@ -913,47 +1937,113 @@ function CalendarScheduleViewer() {
                                 );
                             })}
                         </div>
+
+                        {/* Marker Legend - Compact */}
+                        <MarkerLegend />
                     </div>
                 </div>
 
                 {/* Activities List */}
                 <div className="lg:col-span-1">
                     <div className="glass rounded-2xl p-6 shadow-xl">
-                        <h3 className="text-xl font-bold text-gray-800 mb-4">
-                            <i className="fas fa-tasks mr-2 text-slate-600"></i>
-                            Activities on {selectedDate.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}
-                        </h3>
+                        {/* Header with Search */}
+                        <div className="mb-4">
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="text-xl font-bold text-gray-800">
+                                    <i className="fas fa-tasks mr-2 text-slate-600"></i>
+                                    Activities on {selectedDate.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' })}
+                                </h3>
+                            </div>
+
+                            {/* Search Input */}
+                            <div className="relative">
+                                <input
+                                    type="text"
+                                    value={daySearchTerm}
+                                    onChange={(e) => setDaySearchTerm(e.target.value)}
+                                    placeholder="Search activities on this day..."
+                                    className="w-full px-4 py-2 pl-10 border-2 border-gray-300 rounded-lg focus:border-blue-500 focus:outline-none text-sm"
+                                />
+                                <i className="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+                                {daySearchTerm && (
+                                    <button
+                                        onClick={() => setDaySearchTerm('')}
+                                        className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    >
+                                        <i className="fas fa-times"></i>
+                                    </button>
+                                )}
+                            </div>
+                        </div>
 
                         {selectedDateActivities.length === 0 ? (
                             <div className="text-center py-8">
-                                <i className="fas fa-calendar-times text-4xl mb-3 opacity-50 text-gray-400"></i>
-                                <p className="text-gray-500 mb-4">No activities on this day</p>
-                                <button
-                                    onClick={() => setShowManualEntry(true)}
-                                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium text-sm"
-                                >
-                                    <i className="fas fa-plus-circle mr-2"></i>
-                                    Add Activity
-                                </button>
+                                {daySearchTerm ? (
+                                    <>
+                                        <i className="fas fa-search text-4xl mb-3 opacity-50 text-gray-400"></i>
+                                        <p className="text-gray-500 mb-2">No activities match "{daySearchTerm}"</p>
+                                        <button
+                                            onClick={() => setDaySearchTerm('')}
+                                            className="text-blue-600 hover:text-blue-700 text-sm"
+                                        >
+                                            Clear search
+                                        </button>
+                                    </>
+                                ) : (
+                                    <>
+                                        <i className="fas fa-calendar-times text-4xl mb-3 opacity-50 text-gray-400"></i>
+                                        <p className="text-gray-500 mb-4">No activities on this day</p>
+                                        <button
+                                            onClick={() => setShowManualEntry(true)}
+                                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition font-medium text-sm"
+                                        >
+                                            <i className="fas fa-plus-circle mr-2"></i>
+                                            Add Activity
+                                        </button>
+                                    </>
+                                )}
                             </div>
                         ) : (
                             <div className="space-y-3 max-h-[600px] overflow-y-auto">
-                                {selectedDateActivities.map((activity, idx) => (
-                                    <div
-                                        key={idx}
-                                        className="activity-card p-4 bg-white rounded-lg shadow-sm border-l-4 relative"
-                                        style={{ borderColor: customAreaConfig[activity.area]?.color || '#94a3b8' }}
-                                    >
-                                        {/* Edit Button */}
-                                        <button
-                                            onClick={() => setEditingActivity(activity)}
-                                            className="absolute top-2 right-2 px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-600 rounded text-xs transition"
-                                            title="Edit activity"
-                                        >
-                                            <i className="fas fa-edit"></i>
-                                        </button>
+                                {selectedDateActivities.map((activity, idx) => {
+                                    // Marker configuration
+                                    const markerConfig = {
+                                        milestone: { icon: 'fas fa-gem', color: '#f59e0b' },
+                                        critical: { icon: 'fas fa-exclamation-triangle', color: '#ef4444' },
+                                        inspection: { icon: 'fas fa-clipboard-check', color: '#10b981' },
+                                        deliverable: { icon: 'fas fa-flag-checkered', color: '#3b82f6' },
+                                        deadline: { icon: 'fas fa-clock', color: '#f97316' }
+                                    };
 
-                                        <div className="font-bold text-gray-800 mb-1">{activity.id}</div>
+                                    return (
+                                        <div
+                                            key={idx}
+                                            className="activity-card p-4 bg-white rounded-lg shadow-sm border-l-4 relative"
+                                            style={{ borderColor: customAreaConfig[activity.area]?.color || '#94a3b8' }}
+                                        >
+                                            {/* Edit Button */}
+                                            <button
+                                                onClick={() => setEditingActivity(activity)}
+                                                className="absolute top-2 right-2 px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-600 rounded text-xs transition"
+                                                title="Edit activity"
+                                            >
+                                                <i className="fas fa-edit"></i>
+                                            </button>
+
+                                        <div className="font-bold text-gray-800 mb-1 flex items-center gap-2">
+                                            {activity.id}
+                                            {/* Marker Icon - After Activity ID */}
+                                            {activity.marker && activity.marker.type !== 'none' && (
+                                                <i
+                                                    className={`${markerConfig[activity.marker.type]?.icon || ''}`}
+                                                    style={{
+                                                        color: markerConfig[activity.marker.type]?.color || '#000',
+                                                        filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.2))'
+                                                    }}
+                                                    title={`${activity.marker.type} marker`}
+                                                ></i>
+                                            )}
+                                        </div>
                                         <div className="text-sm text-gray-600 mb-2">{activity.name}</div>
                                         <div className="flex justify-between text-xs text-gray-500">
                                             <span>
@@ -988,13 +2078,13 @@ function CalendarScheduleViewer() {
                                         )}
 
                                         {activity.contractor && (
-                                            <div className="text-xs text-purple-600 mt-2 bg-purple-50 p-2 rounded">
+                                            <div className="text-xs text-gray-700 mt-2 bg-gray-100 p-2 rounded">
                                                 <i className="fas fa-hard-hat mr-1"></i>
                                                 <strong>Contractor:</strong> {activity.contractor}
                                             </div>
                                         )}
                                         {activity.comments && (
-                                            <div className="text-xs text-blue-600 mt-2 bg-blue-50 p-2 rounded">
+                                            <div className="text-xs text-gray-700 mt-2 bg-gray-100 p-2 rounded">
                                                 <i className="fas fa-comment mr-1"></i>
                                                 <strong>Comments:</strong> {activity.comments}
                                             </div>
@@ -1006,7 +2096,8 @@ function CalendarScheduleViewer() {
                                             </div>
                                         )}
                                     </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         )}
                     </div>
@@ -1026,7 +2117,7 @@ function CalendarScheduleViewer() {
                         </span>
                     </div>
 
-                    <div className="text-sm text-gray-600 mb-4 bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
+                    <div className="text-sm text-gray-700 mb-4 bg-gray-100 border-l-4 border-gray-400 p-4 rounded">
                         <i className="fas fa-info-circle mr-2"></i>
                         These activities are missing Start and/or Finish dates. Add dates to move them to the calendar.
                     </div>
@@ -1105,6 +2196,14 @@ function CalendarScheduleViewer() {
                     onClose={() => setShowExportModal(false)}
                     currentUpdate={currentUpdate}
                     onExport={handleExportToExcel}
+                    savedFilterLayouts={savedFilterLayouts}
+                />
+            )}
+
+            {showComparisonModal && (
+                <ComparisonModal
+                    onClose={() => setShowComparisonModal(false)}
+                    updates={updates}
                 />
             )}
 
@@ -1133,11 +2232,21 @@ function CalendarScheduleViewer() {
                 />
             )}
 
+            {showSaveLayoutModal && (
+                <SaveFilterLayoutModal
+                    onClose={() => setShowSaveLayoutModal(false)}
+                    onSave={handleSaveFilterLayout}
+                    activeFilters={activeFilters}
+                />
+            )}
+
             {showImportWizard && (
                 <ImportWizard
                     onClose={() => setShowImportWizard(false)}
                     onComplete={handleImportComplete}
                     currentUpdate={currentUpdate}
+                    customHeaders={customHeaders}
+                    onSaveCustomHeaders={handleSaveCustomHeaders}
                     onSaveFilters={(filters) => {
                         // Save filters to current update
                         setUpdates(prev => prev.map(u =>

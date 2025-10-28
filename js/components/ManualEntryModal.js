@@ -56,7 +56,7 @@ function ManualEntryModal({ onClose, onAdd, currentUpdate, prefilledDate = null 
 
     return (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-            <div className="glass rounded-2xl p-8 max-w-2xl w-full">
+            <div className="glass rounded-2xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
                 <h2 className="text-2xl font-bold mb-6">
                     <i className="fas fa-plus-circle mr-3 text-slate-600"></i>
                     Add Activity Manually

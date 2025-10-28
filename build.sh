@@ -29,6 +29,8 @@ cat js/utils/excelUtils.js >> build/app-bundle.js
 echo "" >> build/app-bundle.js
 cat js/utils/duplicateDetection.js >> build/app-bundle.js
 echo "" >> build/app-bundle.js
+cat js/utils/comparisonUtils.js >> build/app-bundle.js
+echo "" >> build/app-bundle.js
 cat js/utils/localStorage.js >> build/app-bundle.js
 echo "" >> build/app-bundle.js
 
@@ -51,9 +53,15 @@ cat js/components/BulkContractorModal.js >> build/app-bundle.js
 echo "" >> build/app-bundle.js
 cat js/components/ExportOptionsModal.js >> build/app-bundle.js
 echo "" >> build/app-bundle.js
+cat js/components/ComparisonModal.js >> build/app-bundle.js
+echo "" >> build/app-bundle.js
 cat js/components/ConfigureCodesModal.js >> build/app-bundle.js
 echo "" >> build/app-bundle.js
 cat js/components/ImportWizard.js >> build/app-bundle.js
+echo "" >> build/app-bundle.js
+cat js/components/MarkerLegend.js >> build/app-bundle.js
+echo "" >> build/app-bundle.js
+cat js/components/SaveFilterLayoutModal.js >> build/app-bundle.js
 echo "" >> build/app-bundle.js
 
 echo "// ========== MAIN APP ==========" >> build/app-bundle.js

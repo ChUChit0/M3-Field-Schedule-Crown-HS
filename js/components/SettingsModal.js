@@ -3,7 +3,8 @@
  *
  * Allows users to configure project settings including:
  * - Project name customization
- * - Future expandable settings sections
+ * - Version information
+ * - Release notes
  *
  * @param {Object} props
  * @param {Function} props.onClose - Callback to close modal
@@ -14,6 +15,7 @@
 const { useState } = React;
 
 function SettingsModal({ onClose, projectName, onSaveProjectName }) {
+    const APP_VERSION = "1.3.0";
     const [name, setName] = useState(projectName);
 
     const handleSave = () => {
@@ -27,13 +29,16 @@ function SettingsModal({ onClose, projectName, onSaveProjectName }) {
 
     return (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-            <div className="glass rounded-2xl p-8 max-w-2xl w-full">
+            <div className="glass rounded-2xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
                 {/* Header */}
                 <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-3xl font-bold text-gray-800">
-                        <i className="fas fa-cog mr-3 text-gray-600"></i>
-                        Settings
-                    </h2>
+                    <div>
+                        <h2 className="text-3xl font-bold text-gray-800">
+                            <i className="fas fa-cog mr-3 text-gray-600"></i>
+                            Settings
+                        </h2>
+                        <p className="text-sm text-gray-500 mt-1 ml-12">Version {APP_VERSION}</p>
+                    </div>
                     <button
                         onClick={onClose}
                         className="text-gray-400 hover:text-gray-600 text-2xl transition"
@@ -63,10 +68,108 @@ function SettingsModal({ onClose, projectName, onSaveProjectName }) {
                     />
                 </div>
 
-                {/* Future sections placeholder */}
-                <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg p-6 text-center text-gray-500 mb-6">
-                    <i className="fas fa-plus-circle text-3xl mb-2"></i>
-                    <p className="text-sm">More settings will be added here in the future</p>
+                {/* Release Notes Section */}
+                <div className="mb-6">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-3 border-b pb-2">
+                        Release Notes
+                    </h3>
+                    <div className="bg-gray-50 rounded p-4 space-y-4 max-h-64 overflow-y-auto">
+                        {/* Version 1.3.0 */}
+                        <div>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="font-semibold text-gray-800">v1.3.0</span>
+                                <span className="text-xs text-gray-500">October 2025</span>
+                            </div>
+                            <ul className="space-y-1 text-sm text-gray-700 ml-4">
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Multi-select filters with Shift+Click range selection</span>
+                                </li>
+                            </ul>
+                        </div>
+
+                        {/* Version 1.2.0 */}
+                        <div>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="font-semibold text-gray-800">v1.2.0</span>
+                                <span className="text-xs text-gray-500">April 2025</span>
+                            </div>
+                            <ul className="space-y-1 text-sm text-gray-700 ml-4">
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Collapsible accordion interface for space optimization</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Mass contractor assignment to filtered activities</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Real-time activity counter with search functionality</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Professional styling and UI improvements</span>
+                                </li>
+                            </ul>
+                        </div>
+
+                        {/* Version 1.1.0 */}
+                        <div>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="font-semibold text-gray-800">v1.1.0</span>
+                                <span className="text-xs text-gray-500">October 2024</span>
+                            </div>
+                            <ul className="space-y-1 text-sm text-gray-700 ml-4">
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Modular architecture with build system</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Enhanced column mapping and validation</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Import Wizard preview improvements</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Performance optimizations and bug fixes</span>
+                                </li>
+                            </ul>
+                        </div>
+
+                        {/* Version 1.0.0 */}
+                        <div>
+                            <div className="flex items-center gap-2 mb-2">
+                                <span className="font-semibold text-gray-800">v1.0.0</span>
+                                <span className="text-xs text-gray-500">September 2022</span>
+                            </div>
+                            <ul className="space-y-1 text-sm text-gray-700 ml-4">
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Initial production release</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Interactive calendar with activity scheduling</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Excel import/export with column mapping</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Intelligent duplicate detection</span>
+                                </li>
+                                <li className="flex items-start gap-2">
+                                    <span className="text-gray-400">•</span>
+                                    <span>Multi-update management and version control</span>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
                 </div>
 
                 {/* Action Buttons */}

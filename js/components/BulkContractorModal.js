@@ -103,7 +103,7 @@ function BulkContractorModal({ onClose, currentUpdate, onAssign }) {
 
     return (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-            <div className="modal-content glass rounded-2xl p-8 max-w-4xl w-full">
+            <div className="modal-content glass rounded-2xl p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
                 {/* Header */}
                 <div className="flex items-center justify-between mb-6">
                     <h2 className="text-3xl font-bold text-gray-800">

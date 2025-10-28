@@ -25,7 +25,7 @@ const { useState, useRef } = React;
 // Import utilities that will be available globally
 // These are defined in the main app or imported modules
 
-function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
+function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters, customHeaders, onSaveCustomHeaders }) {
     const [step, setStep] = useState(1); // 1: Upload, 2: Map, 3: Filter, 4: Preview
     const [excelData, setExcelData] = useState(null);
     const [headers, setHeaders] = useState([]);
@@ -44,6 +44,9 @@ function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
     const [previewData, setPreviewData] = useState([]);
     const fileInputRef = useRef(null);
 
+    // Custom headers state (local copy that will be saved when mapping is complete)
+    const [localCustomHeaders, setLocalCustomHeaders] = useState([...customHeaders]);
+
     const handleFileUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -57,8 +60,30 @@ function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
                 const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
 
                 if (jsonData.length > 0) {
-                    setHeaders(jsonData[0]);
+                    const excelHeaders = jsonData[0];
+                    setHeaders(excelHeaders);
                     setExcelData(jsonData.slice(1));
+
+                    // Auto-detect column mapping based on keywords
+                    const autoMapping = {};
+                    FIELD_DEFINITIONS.forEach(field => {
+                        const fieldKeywords = field.keywords || [field.key, field.label.toLowerCase()];
+
+                        // Find matching Excel column
+                        const matchedIndex = excelHeaders.findIndex(header => {
+                            const headerLower = (header || '').toString().toLowerCase().trim();
+                            return fieldKeywords.some(keyword =>
+                                headerLower.includes(keyword.toLowerCase()) ||
+                                keyword.toLowerCase().includes(headerLower)
+                            );
+                        });
+
+                        if (matchedIndex !== -1) {
+                            autoMapping[field.key] = matchedIndex;
+                        }
+                    });
+
+                    setColumnMapping(autoMapping);
                     setStep(2);
                 }
             } catch (error) {
@@ -76,6 +101,19 @@ function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
         if (missingFields.length > 0) {
             alert(`Please map required fields: ${missingFields.map(f => f.label).join(', ')}`);
             return;
+        }
+
+        // Save custom headers
+        if (onSaveCustomHeaders) {
+            onSaveCustomHeaders(localCustomHeaders);
+        }
+
+        // Continue to next step (restore original logic after save)
+        const requiredFieldsCheck = FIELD_DEFINITIONS.filter(f => f.required);
+        const missingFieldsCheck = requiredFieldsCheck.filter(f => columnMapping[f.key] === undefined);
+
+        if (missingFieldsCheck.length > 0) {
+            return; // Already alerted above
         }
 
         setStep(3);
@@ -101,25 +139,40 @@ function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
     const handleBulkAdd = () => {
         if (!bulkKeywordInput.trim()) return;
 
-        // First, replace all newlines with spaces to handle wrapped text
-        const cleanedInput = bulkKeywordInput.replace(/\n/g, ' ');
+        // Robust cleaning: Handle Excel wrapped text with line breaks + multiple spaces
+        // Converts ANY whitespace sequence (spaces, tabs, newlines) into single space
+        const cleanedInput = bulkKeywordInput
+            .replace(/\s+/g, ' ')  // Normalize all whitespace to single space
+            .trim();               // Remove leading/trailing whitespace
 
         // Parse by comma or semicolon (primary separators)
-        const keywords = cleanedInput
+        const allKeywords = cleanedInput
             .split(/[,;]+/)
             .map(k => k.trim())
-            .filter(k => k.length > 0)
-            .filter(k => !filterConfig.keywords.includes(k)); // Only add unique keywords
+            .filter(k => k.length > 0);
 
-        if (keywords.length > 0) {
+        // Filter out duplicates (only add new keywords)
+        const newKeywords = allKeywords.filter(k => !filterConfig.keywords.includes(k));
+        const duplicateCount = allKeywords.length - newKeywords.length;
+
+        if (newKeywords.length > 0) {
             setFilterConfig({
                 ...filterConfig,
-                keywords: [...filterConfig.keywords, ...keywords]
+                keywords: [...filterConfig.keywords, ...newKeywords]
             });
             setBulkKeywordInput('');
-            alert(`✅ Added ${keywords.length} keywords successfully!`);
+
+            // Smart notification message
+            if (duplicateCount > 0) {
+                alert(`✅ Added ${newKeywords.length} new keywords successfully!\n\n` +
+                      `ℹ️ Skipped ${duplicateCount} duplicates (already in list)`);
+            } else {
+                alert(`✅ Added ${newKeywords.length} keywords successfully!`);
+            }
         } else {
-            alert('No new keywords to add (duplicates or empty input)');
+            alert('⚠️ No new keywords to add.\n\n' +
+                  'All keywords are already in the list (same update = no duplicates).\n' +
+                  'If you\'re working on a NEW update, create it first!');
         }
     };
 
@@ -274,7 +327,7 @@ function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
 
     return (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-            <div className="modal-content glass rounded-2xl p-8">
+            <div className="modal-content glass rounded-2xl p-6 max-h-[90vh] overflow-y-auto">
                 {/* Step Indicator */}
                 <div className="step-indicator mb-8">
                     <div className={`step ${step >= 1 ? 'active' : ''} ${step > 1 ? 'completed' : ''}`}>
@@ -344,7 +397,9 @@ function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
                         <p className="text-gray-600 mb-6">
                             Map your Excel columns to system fields
                         </p>
-                        <div className="space-y-4 max-h-96 overflow-y-auto">
+
+                        {/* Preset Fields Mapping */}
+                        <div className="space-y-4 max-h-96 overflow-y-auto mb-6">
                             {FIELD_DEFINITIONS.map(field => (
                                 <div key={field.key} className="flex items-center gap-4">
                                     <div className="w-48 font-semibold text-gray-700">
@@ -367,6 +422,111 @@ function ImportWizard({ onClose, onComplete, currentUpdate, onSaveFilters}) {
                                 </div>
                             ))}
                         </div>
+
+                        {/* Unmapped Columns Section */}
+                        {(() => {
+                            // Get all mapped column indices
+                            const mappedIndices = new Set(Object.values(columnMapping).filter(v => v !== undefined));
+
+                            // Get unmapped Excel columns
+                            const unmappedColumns = headers
+                                .map((header, idx) => ({ header, idx }))
+                                .filter(({ idx }) => !mappedIndices.has(idx));
+
+                            if (unmappedColumns.length > 0) {
+                                return (
+                                    <div className="bg-purple-50 border-2 border-purple-200 rounded-lg p-6 mb-6">
+                                        <h3 className="text-lg font-bold text-gray-800 mb-4">
+                                            <i className="fas fa-question-circle mr-2 text-purple-600"></i>
+                                            Unmapped Excel Columns ({unmappedColumns.length})
+                                        </h3>
+                                        <p className="text-sm text-gray-600 mb-4">
+                                            These columns from your Excel file aren't mapped to any preset field. You can add them as custom columns for filtering.
+                                        </p>
+
+                                        <div className="space-y-2 max-h-48 overflow-y-auto">
+                                            {unmappedColumns.map(({ header, idx }) => {
+                                                const isAdded = localCustomHeaders.some(h => h.key === header.toLowerCase().replace(/\s+/g, '_'));
+
+                                                return (
+                                                    <div key={idx} className="flex items-center justify-between bg-white border-2 border-purple-200 rounded-lg p-3">
+                                                        <div className="flex-1">
+                                                            <div className="font-semibold text-gray-800">{header}</div>
+                                                            <div className="text-xs text-gray-500">
+                                                                Excel Column {String.fromCharCode(65 + idx)}
+                                                            </div>
+                                                        </div>
+
+                                                        {!isAdded ? (
+                                                            <button
+                                                                onClick={() => {
+                                                                    const newHeader = {
+                                                                        key: header.toLowerCase().replace(/\s+/g, '_'),
+                                                                        label: header
+                                                                    };
+                                                                    setLocalCustomHeaders([...localCustomHeaders, newHeader]);
+
+                                                                    // Also add to column mapping automatically
+                                                                    setColumnMapping({
+                                                                        ...columnMapping,
+                                                                        [newHeader.key]: idx
+                                                                    });
+                                                                }}
+                                                                className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm transition"
+                                                            >
+                                                                <i className="fas fa-plus mr-2"></i>
+                                                                Add Column
+                                                            </button>
+                                                        ) : (
+                                                            <span className="px-4 py-2 bg-green-100 text-green-700 rounded-lg text-sm font-medium">
+                                                                <i className="fas fa-check mr-2"></i>
+                                                                Added
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            }
+                            return null;
+                        })()}
+
+                        {/* Current Custom Headers */}
+                        {localCustomHeaders.length > 0 && (
+                            <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-6 mb-6">
+                                <h3 className="text-lg font-bold text-gray-800 mb-4">
+                                    <i className="fas fa-list mr-2 text-blue-600"></i>
+                                    Custom Columns ({localCustomHeaders.length})
+                                </h3>
+                                <div className="space-y-2 max-h-48 overflow-y-auto">
+                                    {localCustomHeaders.map((header) => (
+                                        <div key={header.key} className="flex items-center justify-between bg-white border-2 border-blue-200 rounded-lg p-3">
+                                            <div className="flex-1">
+                                                <div className="font-semibold text-gray-800">{header.label}</div>
+                                                <div className="text-xs text-gray-500">
+                                                    Key: <code className="bg-gray-100 px-2 py-0.5 rounded">{header.key}</code>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    setLocalCustomHeaders(localCustomHeaders.filter(h => h.key !== header.key));
+                                                    // Remove from column mapping
+                                                    const newMapping = { ...columnMapping };
+                                                    delete newMapping[header.key];
+                                                    setColumnMapping(newMapping);
+                                                }}
+                                                className="px-3 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg transition"
+                                            >
+                                                <i className="fas fa-trash"></i>
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
                         <div className="flex justify-between mt-6">
                             <button onClick={() => setStep(1)} className="px-6 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition">
                                 <i className="fas fa-arrow-left mr-2"></i>

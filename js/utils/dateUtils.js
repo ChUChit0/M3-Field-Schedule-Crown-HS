@@ -7,7 +7,13 @@
  */
 window.formatDate = (dateStr) => {
     if (!dateStr) return null;
-    const [month, day, year] = dateStr.split('/');
+
+    // Clean any trailing letters (e.g., "07/09/24 A" → "07/09/24")
+    const cleanedDate = String(dateStr).replace(/\s*[A-Za-z]+\s*$/g, '').trim();
+
+    const [month, day, year] = cleanedDate.split('/');
+    if (!month || !day || !year) return null;
+
     const fullYear = year.length === 2 ? '20' + year : year;
     return new Date(fullYear, parseInt(month) - 1, parseInt(day));
 };
@@ -34,8 +40,12 @@ window.dateToString = (date) => {
 const excelDateToString = (serial) => {
     if (!serial || serial === '') return '';
 
-    // If it's already a string date, return it
-    if (typeof serial === 'string' && serial.includes('/')) return serial;
+    // If it's already a string date, clean and return it
+    if (typeof serial === 'string' && serial.includes('/')) {
+        // Remove any letters at the end (e.g., "07/09/24 A" → "07/09/24")
+        // This handles Excel dates with trailing "A" or other letters
+        return serial.replace(/\s*[A-Za-z]+\s*$/g, '').trim();
+    }
 
     // Convert Excel serial number to date
     if (typeof serial === 'number') {

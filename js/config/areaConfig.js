@@ -12,6 +12,7 @@ window.areaConfig = {
 window.FIELD_DEFINITIONS = [
     { key: 'id', label: 'Activity ID', required: true },
     { key: 'name', label: 'Activity Name', required: true },
+    { key: 'contractor', label: 'Contractor / Sub', required: false, keywords: ['contractor', 'sub', 'subcontractor', 'sub contractor', 'subs'] },
     { key: 'original_duration', label: 'Original Duration', required: false },
     { key: 'start', label: 'Start Date', required: true },
     { key: 'finish', label: 'Finish Date', required: true },
